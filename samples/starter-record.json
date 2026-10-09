@@ -1,0 +1,94 @@
+{
+  "company": {
+    "value": "Indo Global Soft Solutions and Technologies Private Limited",
+    "document_id": "SAMPLE_DOCUMENT",
+    "page": 1
+  },
+  "case_number": {
+    "value": "C.P. (IB) No. 377/MB/2021; IA (IBC)(Plan) No. 86 of 2025",
+    "document_id": "SAMPLE_DOCUMENT",
+    "page": 1
+  },
+  "tribunal": {
+    "value": "NCLT Mumbai, Court IV",
+    "document_id": "SAMPLE_DOCUMENT",
+    "page": 1
+  },
+  "order_date": {
+    "value": "2025-11-25",
+    "document_id": "SAMPLE_DOCUMENT",
+    "page": 1
+  },
+  "irp": {
+    "value": "Shailen Shah (initial IRP)",
+    "document_id": "SAMPLE_DOCUMENT",
+    "page": 2
+  },
+  "professional": {
+    "value": "Ravi Sethia (RP at plan approval)",
+    "document_id": "SAMPLE_DOCUMENT",
+    "page": 1
+  },
+  "applicant": {
+    "value": "Ashdan Properties Private Limited",
+    "document_id": "SAMPLE_DOCUMENT",
+    "page": 1
+  },
+  "outcome": "resolution_approved",
+  "outcome_evidence": {
+    "value": "Resolution plan approved",
+    "document_id": "SAMPLE_DOCUMENT",
+    "page": 20
+  },
+  "claims": [
+    {
+      "creditor": "Secured financial creditors (aggregate)",
+      "category": "secured_financial",
+      "scope": "category_total",
+      "claimed": "1738568031",
+      "admitted": "1724612739",
+      "plan_amount": "1300000000",
+      "actual_paid": null,
+      "document_id": "SAMPLE_DOCUMENT",
+      "page": 9,
+      "notes": "Page 9 financial proposal; nominal scheduled amount, not proof of cash received. Subject to plan provisions and costs."
+    },
+    {
+      "creditor": "Unsecured financial creditors (aggregate)",
+      "category": "unsecured_financial",
+      "scope": "category_total",
+      "claimed": "10355083287",
+      "admitted": "6907816278",
+      "plan_amount": "151200000",
+      "actual_paid": null,
+      "document_id": "SAMPLE_DOCUMENT",
+      "page": 9,
+      "notes": "Page 9 financial proposal; nominal scheduled amount, not proof of cash received. Subject to plan provisions and costs."
+    },
+    {
+      "creditor": "Operational creditors (aggregate)",
+      "category": "operational",
+      "scope": "category_total",
+      "claimed": "228991461",
+      "admitted": "198761621",
+      "plan_amount": "1200000",
+      "actual_paid": null,
+      "document_id": "SAMPLE_DOCUMENT",
+      "page": 9,
+      "notes": "Page 9 financial proposal; nominal scheduled amount, not proof of cash received. Subject to plan provisions and costs."
+    },
+    {
+      "creditor": "Other creditors (aggregate)",
+      "category": "other",
+      "scope": "category_total",
+      "claimed": "24102085857",
+      "admitted": "120000000",
+      "plan_amount": "200000",
+      "actual_paid": null,
+      "document_id": "SAMPLE_DOCUMENT",
+      "page": 9,
+      "notes": "Page 9 financial proposal; nominal scheduled amount, not proof of cash received. Subject to plan provisions and costs."
+    }
+  ],
+  "notes": "Manually prepared starter draft. Four category totals, not party-wise claims. The plan also addresses costs, cash balances, equity and contingent recoveries; this POC ratio uses the page 9 nominal payment table only. Actual payments and implemented ownership/directors are unknown. The CIN on page 8 belongs to the successful applicant, not the debtor. RP changes appear on page 6. Review against the original order before approval."
+}
