@@ -19,6 +19,7 @@ from fastapi.staticfiles import StaticFiles
 
 from .db import connection, decode, initialize
 from .extraction import extract_pdf
+from .final_orders import final_decision as classify_final_order
 from .ibbi_orders import download_order
 from .models import Approval, CaseRecord, SaveRecord, metrics
 from .structured import project, match_candidates, persist_import_files
@@ -26,7 +27,7 @@ from .url_import import ImportRequest, public_url, crawl
 from .research_analytics import case_profiles, research_analytics, select_recent_cases
 from .automatic_orders import AutomaticOrders, ScheduleSettings, DEFAULT_CATEGORIES, set_document_category
 from .document_matching import fingerprint, candidates as document_candidates
-from .case_extraction import extract_case, fill_missing
+from .case_extraction import VERSION as EXTRACTION_VERSION, extract_case, fill_missing
 from .catalogue import catalogue_entries
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -92,7 +93,8 @@ def create_app(data_dir: Path | None = None):
 
         visit(record.model_dump(mode="json"))
 
-    def ingest(content, filename, source_url, case_id=None, sample_record=None, max_bytes=MAX_UPLOAD):
+    def ingest(content, filename, source_url, case_id=None, sample_record=None, max_bytes=MAX_UPLOAD,
+               preextracted=None, final_decision=None):
         if len(content) > max_bytes:
             raise HTTPException(413, f"PDF exceeds the {max_bytes//(1024*1024)} MB limit")
         digest = hashlib.sha256(content).hexdigest()
@@ -103,7 +105,7 @@ def create_app(data_dir: Path | None = None):
                     raise HTTPException(409, "This document already belongs to another case")
                 return {"case_id": existing["case_id"], "document_id": existing["id"], "duplicate": True}
         try:
-            extraction = extract_pdf(content)
+            extraction = preextracted if preextracted is not None else extract_pdf(content)
         except ValueError as exc:
             raise HTTPException(422, str(exc)) from exc
         doc_id = uuid4().hex
@@ -113,6 +115,10 @@ def create_app(data_dir: Path | None = None):
         if not sample_record:
             record, extraction['case_facts'] = extract_case(extraction,doc_id)
             extraction['warnings'].extend(extraction['case_facts']['warnings'])
+            if final_decision and record['outcome']!=final_decision['outcome']:
+                record['outcome']=final_decision['outcome']
+                record['outcome_evidence']={'value':final_decision['excerpt'],
+                    'document_id':doc_id,'page':final_decision['page']}
         if sample_record:
             # Curated starter data is explicitly separate from generic extraction.
             serialized = json.dumps(sample_record).replace("SAMPLE_DOCUMENT", doc_id)
@@ -158,7 +164,8 @@ def create_app(data_dir: Path | None = None):
     def health():
         return {"status": "ok"}
 
-    collector = AutomaticOrders(db_connection, lambda content, filename, url: ingest(content,filename,url,max_bytes=50*1024*1024))
+    collector = AutomaticOrders(db_connection, lambda content, filename, url, extraction, decision:
+        ingest(content,filename,url,max_bytes=50*1024*1024,preextracted=extraction,final_decision=decision))
 
     @app.get('/api/scheduler')
     def scheduler_status():
@@ -249,7 +256,7 @@ def create_app(data_dir: Path | None = None):
             items.append({"id": job["id"], "url": job["url"], "status": job["status"],
                           "subjects": job_subjects[job["id"]],
                           "created_at": job["created_at"], "updated_at": job["updated_at"],
-                          **{key: result.get(key, 0) for key in ("pages", "discovered", "imported", "duplicates", "failed")},
+                          **{key: result.get(key, 0) for key in ("pages", "discovered", "imported", "duplicates", "skipped", "failed")},
                           "errors": len(result.get("errors", []))})
         return {"items": items, "total": total, "page": page, "page_size": page_size}
 
@@ -325,11 +332,17 @@ def create_app(data_dir: Path | None = None):
                 raise HTTPException(404,'Document not found')
             case=get_case(db,row['case_id'])
             extraction=json.loads(row['extraction'])
-            if not all('layout_text' in p for p in extraction['pages']) or any(len(p['text'].strip())<30 for p in extraction['pages']):
+            if not all('layout_text' in p for p in extraction['pages']) or any(
+                len(p['text'].strip())<30 and not p.get('ocr_attempted') for p in extraction['pages']
+            ):
                 content=bytes(row['content']) if row['content'] is not None else (storage/'documents'/f'{doc_id}.pdf').read_bytes()
                 extraction=extract_pdf(content)
             facts,report=extract_case(extraction,doc_id)
-            merged=fill_missing(case['record'],facts)
+            # A never-edited draft consists entirely of automatic suggestions;
+            # rebuild it when rules change so stale false positives are removed.
+            auto_created=(case['review_status']=='draft' and case['version']==1
+                          and extraction.get('case_facts') is not None)
+            merged=facts if auto_created else fill_missing(case['record'],facts)
             extraction['case_facts']=report
             extraction['warnings'].extend(w for w in report['warnings'] if w not in extraction['warnings'])
             validate_evidence(db,case['id'],CaseRecord.model_validate(merged))
@@ -495,7 +508,12 @@ def create_app(data_dir: Path | None = None):
                 return {"case_id": row["case_id"], "duplicate": True}
         try:
             path = download_order(storage, order_id)
-            result = ingest(path.read_bytes(), path.name, row["pdf_url"])
+            content = path.read_bytes()
+            extraction = extract_pdf(content)
+            decision = classify_final_order(extraction)
+            if decision is None:
+                raise HTTPException(422, "This PDF does not establish final plan approval or a liquidation order")
+            result = ingest(content, path.name, row["pdf_url"], preextracted=extraction, final_decision=decision)
         except (ValueError, OSError) as exc:
             raise HTTPException(422, str(exc)) from exc
         except Exception as exc:
@@ -529,6 +547,16 @@ def create_app(data_dir: Path | None = None):
 
     @app.get("/api/cases/{case_id}")
     def case_detail(case_id: str):
+        with db_connection() as db:
+            stored=db.execute('SELECT review_status FROM cases WHERE id=?',(case_id,)).fetchone()
+            if not stored:
+                raise HTTPException(404,'Case not found')
+            outdated=[row['id'] for row in db.execute('SELECT id,extraction FROM documents WHERE case_id=?',(case_id,))
+                      if (report:=json.loads(row['extraction']).get('case_facts'))
+                      and report.get('version')!=EXTRACTION_VERSION]
+        if stored['review_status']=='draft':
+            for doc_id in outdated:
+                populate_facts(doc_id)
         with db_connection() as db:
             case = get_case(db, case_id)
             case["documents"] = [decode(r) for r in db.execute("SELECT id,case_id,filename,sha256,source_url,extraction,created_at,subject,order_kind FROM documents WHERE case_id=? ORDER BY created_at", (case_id,))]
@@ -598,7 +626,7 @@ def create_app(data_dir: Path | None = None):
         planned = sum((Decimal(c["metrics"]["matched_plan_inr"]) for c in eligible), Decimal(0))
         return {**research_analytics(recent), **case_profiles(approved), "period":period,
                 "total_cases": len(cases), "approved_cases": len(approved), "draft_cases": len(cases)-len(approved),
-                "covered_cases": sum(c["metrics"]["matched_rows"] > 0 for c in eligible),
+                "covered_cases": sum(c["metrics"]["plan_haircut_percent"] is not None for c in eligible),
                 "matched_admitted_inr": str(admitted), "matched_plan_inr": str(planned),
                 "weighted_plan_haircut_percent": str(((admitted-planned)/admitted*100).quantize(Decimal("0.01"))) if admitted else None,
                 "outcomes": {s: sum(c["record"]["outcome"] == s for c in recent) for s in

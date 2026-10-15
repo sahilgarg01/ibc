@@ -3,8 +3,9 @@ import re
 from datetime import datetime
 from decimal import Decimal, InvalidOperation
 from .models import CaseRecord, Claim, Plan
+from .final_orders import final_decision
 
-VERSION = 'rules-3'
+VERSION = 'rules-5'
 AMOUNT = r'(?:Rs\.?|INR|₹)?\s*([\d,]+(?:\.\d+)?)\s*(crores?|cr\.?|lakhs?|lacs?|millions?)?'
 CIN = r'[LU]\d{5}[A-Z]{2}\d{4}[A-Z]{3}\d{6}'
 
@@ -61,14 +62,19 @@ def extract_case(extraction, document_id):
             evidence.append({'field':field,'page':page,'excerpt':excerpt[:1000]})
     labels={
         'company':r'(?:Corporate debtor|Company name)', 'cin':r'(?:Corporate debtor CIN|Debtor CIN)',
+        'registered_office':r'(?:Corporate debtor registered office|Registered office of (?:the )?corporate debtor)',
+        'industry':r'(?:Industry|Sector|Nature of business)',
         'case_number':r'(?:Case number|Case no\.)', 'tribunal':r'(?:NCLT bench|Tribunal)',
         'irp':r'(?:Interim resolution professional|IRP)', 'professional':r'(?:Resolution professional|RP)',
         'liquidator':r'Liquidator', 'applicant':r'(?:Successful resolution applicant|Resolution applicant)',
+        'applicant_cin':r'(?:Successful resolution applicant CIN|Resolution applicant CIN)',
+        'fair_value':r'Fair value', 'liquidation_value':r'Liquidation value',
         'admission_date':r'(?:Admission date|CIRP commencement date)',
         'resolution_date':r'(?:Resolution approval date|Resolution date)', 'order_date':r'(?:Order date|Pronounced)',
     }
     claim_rows=[]
     table_header=None
+    admitted_total=None
     for page in extraction['pages']:
         number=page['page']
         text=page['text']
@@ -79,10 +85,19 @@ def extract_case(extraction, document_id):
                 value=match.group(1).strip()
                 if field.endswith('date'):
                     value=iso_date(value)
-                if field=='cin' and not re.fullmatch(CIN,value or ''):
+                if field in {'cin','applicant_cin'} and not re.fullmatch(CIN,value or '',re.I):
                     value=None
+                if field in {'fair_value','liquidation_value'}:
+                    value=money(value)
                 if value:
                     put(field,value,number,match.group(0))
+        if record['applicant'] and not record['applicant_cin']:
+            applicant_key=re.sub(r'\W+','',record['applicant']['value']).casefold()
+            for match in re.finditer(r'\bCIN\s*[:\-]?\s*('+CIN+r')\b',flat,re.I):
+                preceding=flat[max(0,match.start()-160):match.start()]
+                if applicant_key in re.sub(r'\W+','',preceding).casefold():
+                    put('applicant_cin',match.group(1).upper(),number,preceding[-100:]+match.group(0))
+                    break
         # Caption roles, rather than the first company/CIN appearing anywhere in the PDF.
         if number<=3:
             # Opening headings identify this order. Cited decisions later in
@@ -150,18 +165,14 @@ def extract_case(extraction, document_id):
         irp=re.search(r'(?:Mr\.?|Ms\.?|Mrs\.?)\s+([A-Z][A-Za-z .]+?),?\s+was\s+appointed\s+as\s+the\s+Interim Resolution Professional',flat)
         if irp:
             put('irp',irp.group(1),number,irp.group(0))
+        rp_appointment=re.search(r'(?:Mr\.?|Ms\.?|Mrs\.?)\s+([A-Z][A-Za-z .]+?),?\s+was\s+appointed\s+as\s+(?:the\s+)?Resolution Professional',flat,re.I)
+        if rp_appointment:
+            put('professional',rp_appointment.group(1),number,rp_appointment.group(0))
         admitted=re.search(r'(?:initiated|commenced)\s+the\s+Corporate Insolvency Resolution Process.{0,180}?Order dated\s+(\d{2}[./-]\d{2}[./-]\d{4})',flat,re.I)
         if admitted:
             put('admission_date',iso_date(admitted.group(1)),number,admitted.group(0))
-        # Outcome must be an operative order, not a request, precedent or CoC vote.
-        outcome=re.search(r'(?:The|This)\s+Resolution Plan(?:\s+annexed to the Application)?\s+is\s+(?:hereby\s+)?approved\b',flat,re.I)
-        if outcome and record['outcome']=='unknown':
-            record['outcome']='resolution_approved'
-            put('outcome_evidence',outcome.group(0),number,outcome.group(0))
-        liquidation=re.search(r'(?:we\s+hereby\s+order\s+liquidation\s+of\s+the\s+corporate\s+debtor|the\s+corporate\s+debtor\s+is\s+(?:hereby\s+)?ordered\s+to\s+be\s+liquidated)',flat,re.I)
-        if liquidation and record['outcome']=='unknown':
-            record['outcome']='liquidation_ordered'
-            put('outcome_evidence',liquidation.group(0),number,liquidation.group(0))
+        # Outcome is assigned only by the operative-order check below. Earlier
+        # paragraphs often quote an approval issued in a different case.
         # Explicit before/after role labels; never infer ownership from plan approval.
         roles={'previous_owners':r'(?:Previous|Former|Erstwhile|Pre-resolution) owners?',
                'current_owners':r'(?:Current|Present|Existing) (?:owners?|shareholders?)',
@@ -234,13 +245,60 @@ def extract_case(extraction, document_id):
                     'claimed':money(match.group(2),scale),'admitted':money(match.group(3),scale),'plan_amount':money(match.group(4),scale),
                     'document_id':document_id,'page':number,'notes':'Automatically extracted from financial table; verify column units.'})
                 evidence.append({'field':'claims','page':number,'excerpt':line.strip()})
-        plan=re.search(r'^\s*(?:Resolution plan amount|Total resolution amount|Plan amount)\s*:\s*([^\n;]+)',text,re.I|re.M)
+        plan=re.search(r'^\s*(?:Resolution plan amount|Total (?:resolution|plan) amount|(?:Total )?amount under (?:the )?resolution plan|Plan amount)\s*:\s*([^\n;]+)',text,re.I|re.M)
         if plan and record.get('applicant'):
             amount=money(plan.group(1))
             if amount is not None:
                 p=Plan(applicant=record['applicant']['value'],amount=amount,document_id=document_id,page=number).model_dump(mode='json')
                 if not record['plans']: record['plans'].append(p)
                 evidence.append({'field':'plans','page':number,'excerpt':plan.group(0)})
+        admitted_match=re.search(r'^\s*(?:Total admitted claims|Total claims admitted)\s*:\s*([^\n;]+)',text,re.I|re.M)
+        if admitted_match and admitted_total is None:
+            amount=money(admitted_match.group(1))
+            if amount is not None and Decimal(amount)>0:
+                admitted_total=(amount,number,admitted_match.group(0))
+    if admitted_total and len(record['plans'])==1 and record['plans'][0]['admitted'] is None:
+        record['plans'][0]['admitted']=admitted_total[0]
+        evidence.append({'field':'plans','page':admitted_total[1],'excerpt':admitted_total[2]})
+    # Some supporting judgments describe a debtor's earlier CIRP. Only link
+    # their narrative to this debtor when the judgment explicitly calls its
+    # captioned petitioner the corporate debtor; never treat it as this order's
+    # plan approval.
+    opening=' '.join(p['text'] for p in extraction['pages'][:4])
+    if re.search(r'\bIN\s+THE\s+HIGH\s+COURT\b',extraction['pages'][0]['text'][:1200],re.I) and re.search(r'Petitioner[-\s]+Corporate\s+Debtor',opening,re.I):
+        first=extraction['pages'][0]
+        if not record['order_date']:
+            dated=re.search(r'\bJUDGMENT\s+DATED\s*:\s*(\d{1,2}[./-]\d{1,2}[./-]\d{4})',first['text'],re.I)
+            if dated: put('order_date',iso_date(dated.group(1)),first['page'],dated.group(0))
+        if not record['company']:
+            caption=re.search(r'(?m)^\s*([A-Z][A-Z0-9 &.,\-]+?(?:PVT\.?\s*LTD\.?|PRIVATE\s+LIMITED|LIMITED|LTD\.?))\s*\n\s*Versus\b',first['text'],re.I)
+            if caption:
+                put('company',caption.group(1).title().replace('Pvt. Ltd.','Pvt. Ltd.'),first['page'],caption.group(0))
+        for page in extraction['pages'][:4]:
+            flat=' '.join(page['text'].split())
+            if not record['case_number']:
+                case=re.search(r'\bC\.?\s*P\.?\s*\(IB\)\s*(?:No\.?\s*)?(\d+)\s*(?:of|/)\s*(\d{4})',flat,re.I)
+                if case: put('case_number',f'CP (IB) No. {case.group(1)} of {case.group(2)}',page['page'],case.group(0))
+            if not record['tribunal']:
+                bench=re.search(r'National Company Law Tribunal\s*\("?NCLT"?\)?\s*,?\s*([A-Z][A-Za-z]+)',flat,re.I)
+                if bench: put('tribunal','NCLT '+bench.group(1),page['page'],bench.group(0))
+            if not record['industry']:
+                business=re.search(r'The Petitioner is a company engaged in the business of\s+([^.\n]{5,100})',flat,re.I)
+                if business: put('industry',business.group(1),page['page'],business.group(0))
+            if not record['applicant']:
+                applicant=re.search(r'approved the resolution plan submitted by\s+([A-Z][A-Za-z0-9 &.,\-]+?(?:Private Limited|Pvt\.? Ltd\.?|Limited|Ltd\.?))\b',flat,re.I)
+                if applicant: put('applicant',applicant.group(1),page['page'],applicant.group(0))
+            if not record['admission_date']:
+                admission=re.search(r'NCLT,?\s+by an order dated\s+(\d{1,2}[./-]\d{1,2}[./-]\d{4}),?\s+admitted\b',flat,re.I)
+                if admission: put('admission_date',iso_date(admission.group(1)),page['page'],admission.group(0))
+            if not record['resolution_date']:
+                approval=re.search(r'NCLT,?\s+by an order dated\s+(\d{1,2}[./-]\d{1,2}[./-]\d{4}).{0,100}?approved the resolution plan',flat,re.I)
+                if approval: put('resolution_date',iso_date(approval.group(1)),page['page'],approval.group(0))
+    decision=final_decision(extraction)
+    if decision and (record['outcome']!=decision['outcome'] or not record['outcome_evidence']):
+        record['outcome']=decision['outcome']
+        record['outcome_evidence']={'value':decision['excerpt'],'document_id':document_id,'page':decision['page']}
+        evidence.append({'field':'outcome_evidence','page':decision['page'],'excerpt':decision['excerpt']})
     # Preserve evidence suggestions, avoid mixing totals with individual creditor rows.
     seen=set()
     for c in claim_rows:

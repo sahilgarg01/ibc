@@ -52,6 +52,8 @@ class CaseRecord(StrictModel):
     # Every populated identity/ownership field carries its own source reference.
     company: Fact | None = None
     cin: Fact | None = None
+    registered_office: Fact | None = None
+    industry: Fact | None = None
     case_number: Fact | None = None
     tribunal: Fact | None = None
     admission_date: DateFact | None = None
@@ -61,6 +63,9 @@ class CaseRecord(StrictModel):
     professional: Fact | None = None
     liquidator: Fact | None = None
     applicant: Fact | None = None
+    applicant_cin: Fact | None = None
+    fair_value: Fact | None = None
+    liquidation_value: Fact | None = None
     previous_owners: list[Fact] = Field(default_factory=list)
     current_owners: list[Fact] = Field(default_factory=list)
     subsequent_owners: list[Fact] = Field(default_factory=list)
@@ -107,7 +112,13 @@ def metrics(record: CaseRecord) -> dict:
     eligible = [c for c in record.claims if c.admitted is not None and c.admitted > 0 and c.plan_amount is not None]
     admitted = sum((c.admitted for c in eligible), Decimal(0))
     planned = sum((c.plan_amount for c in eligible), Decimal(0))
+    basis = 'matched_claims' if admitted else None
+    if not admitted and len(record.plans)==1:
+        plan=record.plans[0]
+        if plan.admitted is not None and plan.amount is not None:
+            admitted,planned=plan.admitted,plan.amount
+            basis='plan_total'
     haircut = ((admitted - planned) / admitted * 100).quantize(Decimal("0.01")) if admitted else None
     return {"matched_admitted_inr": str(admitted), "matched_plan_inr": str(planned),
             "plan_haircut_percent": str(haircut) if haircut is not None else None,
-            "matched_rows": len(eligible), "total_rows": len(record.claims)}
+            "matched_rows": len(eligible), "total_rows": len(record.claims),"basis":basis}

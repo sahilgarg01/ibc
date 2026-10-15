@@ -12,6 +12,8 @@ from bs4 import BeautifulSoup
 from pydantic import BaseModel, Field
 
 from .ibbi_orders import BASE, parse_listing
+from .extraction import extract_pdf
+from .final_orders import final_decision, skip_listing
 from .structured import persist_import_files
 from .url_import import fetch
 
@@ -180,7 +182,7 @@ class AutomaticOrders:
     def run(self, job_id):
         with self.connect() as db:
             selected=json.loads(db.execute('SELECT result FROM import_jobs WHERE id=?',(job_id,)).fetchone()[0]).get('category','all')
-        result = {'pages':0, 'discovered':0, 'imported':0, 'duplicates':0, 'failed':0,
+        result = {'pages':0, 'discovered':0, 'imported':0, 'duplicates':0, 'failed':0,'skipped':0,
                   'items':[], 'errors':[], 'limits_reached':False, 'known_orders':0,'category':selected}
         heartbeat_stop = Event()
         def heartbeat():
@@ -246,7 +248,7 @@ class AutomaticOrders:
                     if self.stop_event.is_set():
                         break
                     with self.connect() as db:
-                        existing = db.execute('SELECT case_id,document_id,pdf_status,subject,order_date FROM source_orders WHERE pdf_url=?', (order['pdf_url'],)).fetchone()
+                        existing = db.execute('SELECT case_id,document_id,pdf_status,subject,remarks,order_date FROM source_orders WHERE pdf_url=?', (order['pdf_url'],)).fetchone()
                         db.execute('''INSERT INTO source_orders(id,pdf_url,order_date,subject,remarks,first_seen_at,last_seen_at)
                             VALUES(?,?,?,?,?,?,?) ON CONFLICT(pdf_url) DO UPDATE SET order_date=excluded.order_date,
                             subject=excluded.subject,remarks=excluded.remarks,last_seen_at=excluded.last_seen_at''',
@@ -259,14 +261,38 @@ class AutomaticOrders:
                             set_document_category(db,existing['document_id'],source['category'])
                         result['known_orders'] += 1
                         continue
+                    if (existing and existing['pdf_status']=='skipped_nonfinal'
+                        and existing['subject']==order['subject'] and existing['remarks']==order['remarks']
+                        and existing['order_date']==order['order_date']):
+                        result['known_orders'] += 1
+                        continue
                     result['discovered'] += 1
                     result.setdefault('since_last_sync', {})[source['category']] = source['last_sync']
+                    if skip_listing(order['subject'],order['remarks']):
+                        with self.connect() as db:
+                            db.execute("UPDATE source_orders SET pdf_status='skipped_nonfinal',pdf_error=? WHERE id=?",
+                                       ('Listing describes a procedural order, not final resolution or liquidation',order['id']))
+                        result['skipped'] += 1
+                        self.progress(job_id,result)
+                        continue
                     try:
                         pdf, _ = fetch(client, order['pdf_url'], 50*1024*1024)
                         prefix = pdf.find(b'%PDF-',0,8192)
                         if prefix > 0:
                             pdf = pdf[prefix:]
-                        item = self.ingest(pdf, urlsplit(order['pdf_url']).path.rsplit('/',1)[-1], order['pdf_url'])
+                        digest=hashlib.sha256(pdf).hexdigest()
+                        with self.connect() as db:
+                            stored_pdf=db.execute('SELECT extraction FROM documents WHERE sha256=?',(digest,)).fetchone()
+                        extraction=json.loads(stored_pdf['extraction']) if stored_pdf else extract_pdf(pdf)
+                        decision=final_decision(extraction)
+                        if decision is None:
+                            with self.connect() as db:
+                                db.execute("UPDATE source_orders SET pdf_status='skipped_nonfinal',pdf_error=? WHERE id=?",
+                                           ('PDF does not establish final plan approval or a liquidation order',order['id']))
+                            result['skipped'] += 1
+                            self.progress(job_id,result)
+                            continue
+                        item = self.ingest(pdf, urlsplit(order['pdf_url']).path.rsplit('/',1)[-1], order['pdf_url'],extraction,decision)
                         result['duplicates' if item['duplicate'] else 'imported'] += 1
                         result['items'].append({'url':order['pdf_url'],'category':source['category'],**item})
                         # Events persist separately; keep only a small preview in job JSON.
@@ -274,7 +300,6 @@ class AutomaticOrders:
                         with self.connect() as db:
                             set_document_category(db,item['document_id'],source['category'])
                             stored = db.execute('SELECT sha256 FROM documents WHERE id=?', (item['document_id'],)).fetchone()
-                            digest = hashlib.sha256(pdf).hexdigest()
                             if not stored or stored['sha256'] != digest:
                                 raise ValueError('Imported PDF hash does not match this source row')
                             db.execute("UPDATE source_orders SET case_id=?,document_id=?,pdf_sha256=?,pdf_bytes=?,pdf_status='downloaded',pdf_error=NULL,pdf_fetched_at=? WHERE id=?",
@@ -304,7 +329,8 @@ class AutomaticOrders:
                 self.stop_event.wait(.5)
             with self.connect() as db:
                 pending = db.execute('''SELECT COUNT(*) FROM source_orders o JOIN order_categories c ON c.order_id=o.id
-                    WHERE c.category=? AND (o.pdf_status<>'downloaded' OR o.case_id IS NULL)''',(source['category'],)).fetchone()[0]
+                    WHERE c.category=? AND o.pdf_status<>'skipped_nonfinal'
+                    AND (o.pdf_status<>'downloaded' OR o.case_id IS NULL)''',(source['category'],)).fetchone()[0]
                 if pending and not self.stop_event.is_set():
                     had_errors = True
                     result['errors'].append({'url':source['url'],'error':f'{pending} order PDFs remain unstored; the next sync will retry them.'})

@@ -7,6 +7,8 @@ from pypdf import PdfReader, PdfWriter
 
 from backend.main import ROOT, create_app
 from backend.automatic_orders import DEFAULT_CATEGORIES
+from backend.final_orders import final_decision, skip_listing
+from backend.extraction import extract_pdf
 from backend.db import connection
 import hashlib
 
@@ -18,12 +20,37 @@ def listing(category, page=1):
 
 
 def wait_job(client, job_id):
-    for _ in range(400):
+    for _ in range(2000):
         job = client.get('/api/imports/'+job_id).json()
         if job['status'] not in {'queued','running'}:
             return job
         time.sleep(.02)
     raise AssertionError('Job did not finish')
+
+
+def test_final_order_screening_and_procedural_listing_skip(tmp_path, monkeypatch):
+    assert skip_listing('Interlocutory application allowed', 'Order')
+    assert skip_listing('Appointment of RP', 'Order')
+    assert not skip_listing('Approval of resolution plan', 'Final order')
+    sample=(ROOT/'samples/indo-global-resolution-order.pdf').read_bytes()
+    assert final_decision(extract_pdf(sample))['outcome']=='resolution_approved'
+    html=b'''<table class="reporttable"><tbody>
+      <tr><td>1</td><td>08 Aug, 2022</td><td><a href="/uploads/order/procedure.pdf">Interlocutory application allowed</a></td><td>Order</td></tr>
+      <tr><td>2</td><td>21 Apr, 2022</td><td><a href="/uploads/order/final.pdf">Approval of resolution plan</a></td><td>Final order</td></tr>
+      </tbody></table>'''
+    downloaded=[]
+    def fetch(client,url,limit):
+        if url.endswith('.pdf'):
+            downloaded.append(url)
+            return sample,url
+        return html,url
+    monkeypatch.setattr('backend.automatic_orders.fetch',fetch)
+    with TestClient(create_app(tmp_path)) as client:
+        job=wait_job(client,client.post('/api/scheduler/sync?category=nclt').json()['id'])
+        assert job['status']=='completed' and job['result']['skipped']==1
+        assert job['result']['imported']==1 and len(downloaded)==1
+        rows=client.get('/api/orders?category=nclt').json()['items']
+        assert {row['pdf_status'] for row in rows}=={'downloaded','skipped_nonfinal'}
 
 
 def test_distinct_source_rows_keep_their_pdf_and_official_subject(tmp_path, monkeypatch):

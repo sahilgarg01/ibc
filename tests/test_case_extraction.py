@@ -2,13 +2,15 @@ from backend.case_extraction import extract_case, money, fill_missing
 from backend.extraction import extract_pdf
 from backend.main import ROOT, create_app
 from backend.models import metrics, CaseRecord
+from backend.final_orders import final_decision
 from backend.db import connection
 from fastapi.testclient import TestClient
 import json
 
 
 def test_labeled_facts_claims_ownership_and_plan():
-    text='''Corporate debtor: Example Private Limited
+    text='''IN THE NATIONAL COMPANY LAW TRIBUNAL, MUMBAI
+Corporate debtor: Example Private Limited
 Debtor CIN: U12345MH2020PTC123456
 Case number: CP 123/2025
 Tribunal: NCLT Mumbai
@@ -37,6 +39,32 @@ The Resolution Plan is hereby approved.
     assert r['outcome']=='resolution_approved' and report['evidence']
     assert money('unknown') is None
     assert money('0')=='0.00'
+
+
+def test_final_order_business_fields_and_total_based_haircut():
+    text='''IN THE NATIONAL COMPANY LAW TRIBUNAL, MUMBAI
+Corporate debtor: Example Private Limited
+Corporate debtor registered office: 1 Market Road, Mumbai
+Debtor CIN: U12345MH2020PTC123456
+Industry: Textiles
+Successful resolution applicant: Buyer Limited
+Resolution applicant CIN: U12345MH2021PLC123456
+Fair value: Rs 10 crore
+Liquidation value: Rs 8 crore
+Total admitted claims: Rs 20 crore
+Total amount under resolution plan: Rs 5 crore
+The Resolution Plan is hereby approved.
+'''
+    record,_=extract_case({'pages':[{'page':1,'text':text}]},'source-pdf')
+    assert record['registered_office']['value']=='1 Market Road, Mumbai'
+    assert record['industry']['value']=='Textiles'
+    assert record['applicant']['value']=='Buyer Limited'
+    assert record['applicant_cin']['value']=='U12345MH2021PLC123456'
+    assert record['fair_value']['value']=='100000000.00'
+    assert record['liquidation_value']['value']=='80000000.00'
+    assert record['plans'][0]['admitted']=='200000000.00'
+    result=metrics(CaseRecord.model_validate(record))
+    assert result['plan_haircut_percent']=='75.00' and result['basis']=='plan_total'
 
 
 def test_drt_pdf_headings_fill_only_supported_fields():
@@ -94,8 +122,31 @@ def test_real_sample_extraction_and_no_invented_ownership():
     assert len(r['claims'])==4
     assert metrics(CaseRecord.model_validate(r))['plan_haircut_percent']=='83.77'
     assert r['plans'][0]['amount']=='1452600000.00'
+    assert r['applicant_cin']['value']=='U45202PN2020PTC189375'
+    assert r['applicant_cin']['page']==8
     assert r['plans'][0]['page']==9 and r['admission_date']['page']==2
     assert report['version']
+
+
+def test_quoted_nclt_approval_in_high_court_judgment_is_not_a_final_order():
+    extraction={'pages':[
+        {'page':1,'text':'IN THE HIGH COURT OF GUJARAT AT AHMEDABAD\nJUDGMENT DATED: 09/04/2025\nTECHNOVAA PLASTIC INDUSTRIES PVT. LTD.\nVersus\nTAX OFFICER'},
+        {'page':2,'text':'The Petitioner is a company engaged in the business of manufacturing plastic film.\n'
+                            'CP (IB) 189 of 2018 was filed against the Petitioner-Corporate Debtor before the '
+                            'National Company Law Tribunal ("NCLT"), Ahmedabad. The NCLT, by an order dated '
+                            '12.11.2018, admitted the said application.'},
+        {'page':3,'text':'The NCLT, by an order dated 04.09.2020, approved the resolution plan '
+                            'submitted by Kankriya Enterprises Private Limited. The Resolution Plan is approved. '
+                            'The tax demand notices are quashed.'},
+    ]}
+    assert final_decision(extraction) is None
+    record,_=extract_case(extraction,'high-court-pdf')
+    assert record['outcome']=='unknown' and record['outcome_evidence'] is None
+    assert record['company']['value']=='Technovaa Plastic Industries Pvt. Ltd.'
+    assert record['case_number']['value']=='CP (IB) No. 189 of 2018'
+    assert record['industry']['value']=='manufacturing plastic film'
+    assert record['admission_date']['value']=='2018-11-12'
+    assert record['applicant']['value']=='Kankriya Enterprises Private Limited'
 
 
 def test_owner_roles_need_explicit_corporate_debtor_evidence():
@@ -141,6 +192,26 @@ def test_backfill_preserves_entered_values_and_is_idempotent(tmp_path):
         version=case['version']
         client.post('/api/documents/'+doc_id+'/extract-facts')
         assert client.get('/api/cases/'+case_id).json()['version']==version
+
+
+def test_opening_older_draft_refills_available_fields(tmp_path):
+    pdf=(ROOT/'samples/indo-global-resolution-order.pdf').read_bytes()
+    with TestClient(create_app(tmp_path)) as client:
+        imported=client.post('/api/documents',files={'file':('order.pdf',pdf,'application/pdf')}).json()
+        case_id,doc_id=imported['case_id'],imported['document_id']
+        with connection(tmp_path,database_url='') as db:
+            row=db.execute('SELECT record FROM cases WHERE id=?',(case_id,)).fetchone()
+            record=json.loads(row['record'])
+            record['applicant_cin']=None
+            db.execute('UPDATE cases SET record=? WHERE id=?',(json.dumps(record),case_id))
+            row=db.execute('SELECT extraction FROM documents WHERE id=?',(doc_id,)).fetchone()
+            extraction=json.loads(row['extraction'])
+            extraction['case_facts']['version']='rules-4'
+            db.execute('UPDATE documents SET extraction=? WHERE id=?',(json.dumps(extraction),doc_id))
+        detail=client.get('/api/cases/'+case_id).json()
+        assert detail['record']['applicant_cin']['value']=='U45202PN2020PTC189375'
+        assert detail['version']==2
+        assert client.get('/api/cases/'+case_id).json()['version']==2
 
 
 def test_current_owner_is_saved_with_its_source_page(tmp_path):

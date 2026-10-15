@@ -126,7 +126,7 @@ def research_analytics(cases):
             haircut = case["metrics"]["plan_haircut_percent"]
             admitted = Decimal(case['metrics']['matched_admitted_inr'])
             planned = Decimal(case['metrics']['matched_plan_inr'])
-            basis = 'matched_claims'
+            basis = case['metrics'].get('basis') or 'matched_claims'
             if haircut is None and len(r.get("plans", [])) == 1:
                 p = r["plans"][0]
                 if p["admitted"] and p["amount"] is not None:

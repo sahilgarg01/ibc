@@ -15,7 +15,9 @@ CREATE INDEX IF NOT EXISTS entity_name_idx ON entities(normalized_name);
 CREATE TABLE IF NOT EXISTS case_details (
  case_id TEXT PRIMARY KEY REFERENCES cases(id), company TEXT, cin TEXT,
  company_entity_id TEXT REFERENCES entities(id), nclt_bench TEXT,
- admission_date TEXT, resolution_date TEXT, irp TEXT, rp TEXT, outcome TEXT NOT NULL
+ admission_date TEXT, resolution_date TEXT, irp TEXT, rp TEXT, outcome TEXT NOT NULL,
+ registered_office TEXT, industry TEXT, applicant TEXT, applicant_cin TEXT,
+ fair_value NUMERIC(20,2), liquidation_value NUMERIC(20,2)
 );
 CREATE INDEX IF NOT EXISTS case_cin_idx ON case_details(cin);
 CREATE TABLE IF NOT EXISTS claims (
@@ -74,9 +76,14 @@ def project(db, case_id, record):
     for table in ("case_details", "claims", "people", "plans"):
         db.execute(f"DELETE FROM {table} WHERE case_id=?", (case_id,))
     company_id = entity(db, r.company.value, "company", "CIN:" + r.cin.value.upper() if r.cin else None) if r.company else None
-    db.execute("INSERT INTO case_details VALUES(?,?,?,?,?,?,?,?,?,?)",
+    db.execute("""INSERT INTO case_details
+        (case_id,company,cin,company_entity_id,nclt_bench,admission_date,resolution_date,irp,rp,outcome,
+         registered_office,industry,applicant,applicant_cin,fair_value,liquidation_value)
+        VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                (case_id, value(r.company), value(r.cin), company_id, value(r.tribunal),
-                value(r.admission_date), value(r.resolution_date), value(r.irp), value(r.professional), r.outcome))
+                value(r.admission_date), value(r.resolution_date), value(r.irp), value(r.professional), r.outcome,
+                value(r.registered_office),value(r.industry),value(r.applicant),value(r.applicant_cin),
+                value(r.fair_value),value(r.liquidation_value)))
     for c in r.claims:
         db.execute("INSERT INTO claims VALUES(?,?,?,?,?,?,?,?,?,?,?)", (uuid4().hex, case_id,
                    c.creditor, c.category, c.scope, str(c.claimed) if c.claimed is not None else None,
@@ -106,6 +113,16 @@ def initialize_structured(db):
     for statement in SCHEMA.split(";"):
         if statement.strip():
             db.execute(statement)
+    extra_columns={'registered_office':'TEXT','industry':'TEXT','applicant':'TEXT','applicant_cin':'TEXT',
+                   'fair_value':'NUMERIC(20,2)','liquidation_value':'NUMERIC(20,2)'}
+    if hasattr(db,'raw'):
+        for column,kind in extra_columns.items():
+            db.execute(f'ALTER TABLE case_details ADD COLUMN IF NOT EXISTS {column} {kind}')
+    else:
+        existing={row['name'] for row in db.execute('PRAGMA table_info(case_details)')}
+        for column,kind in extra_columns.items():
+            if column not in existing:
+                db.execute(f'ALTER TABLE case_details ADD COLUMN {column} {kind}')
     for row in db.execute("SELECT id,record FROM cases WHERE id NOT IN (SELECT case_id FROM case_details)").fetchall():
         project(db, row["id"], json.loads(row["record"]))
     for job in db.execute("SELECT id,created_at,result FROM import_jobs").fetchall():
