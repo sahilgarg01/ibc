@@ -256,7 +256,7 @@ def create_app(data_dir: Path | None = None):
             items.append({"id": job["id"], "url": job["url"], "status": job["status"],
                           "subjects": job_subjects[job["id"]],
                           "created_at": job["created_at"], "updated_at": job["updated_at"],
-                          **{key: result.get(key, 0) for key in ("pages", "discovered", "imported", "duplicates", "skipped", "failed")},
+                          **{key: result.get(key, 0) for key in ("pages", "discovered", "imported", "duplicates", "skipped", "review_required", "failed")},
                           "errors": len(result.get("errors", []))})
         return {"items": items, "total": total, "page": page, "page_size": page_size}
 

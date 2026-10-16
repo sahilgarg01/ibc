@@ -272,15 +272,22 @@ async function refreshImportHistory(){
   try{
     await refreshScheduler();
     const result=await api(`/api/import-history?page=${importHistoryPage}`);
-    $('#import-job-list').innerHTML=result.items.map(j=>`<tr data-job="${esc(j.id)}" tabindex="0" title="Double-click to view files"><td>${esc(j.url)}</td><td>${esc((j.subjects||[]).join(' · ')||'Not extracted yet')}</td><td>${esc(createdTime(j.created_at))}</td><td><span class="badge">${esc(j.status)}</span></td><td>${j.pages}</td><td>${j.discovered}</td><td>${j.imported}</td><td>${j.duplicates}</td><td>${j.skipped||0}</td><td>${j.failed}</td><td>${j.errors}</td><td><button class="text-button open-import-job" data-job="${esc(j.id)}">View files</button></td></tr>`).join('');
+    $('#import-job-list').innerHTML=result.items.map(j=>`<tr data-job="${esc(j.id)}" tabindex="0" title="Double-click to view files"><td>${esc(j.url)}</td><td>${esc((j.subjects||[]).join(' · ')||'Not extracted yet')}</td><td>${esc(createdTime(j.created_at))}</td><td><span class="badge">${esc(j.status)}</span></td><td>${j.pages}</td><td>${j.discovered}</td><td>${j.imported}</td><td>${j.duplicates}</td><td>${j.skipped||0}</td><td>${j.review_required||0}</td><td>${j.failed}</td><td>${j.errors}</td><td><button class="text-button open-import-job" data-job="${esc(j.id)}">View files</button></td></tr>`).join('');
     $('#imports-empty').hidden=result.total!==0;$('#imports-page').textContent=`Page ${importHistoryPage} of ${Math.max(1,Math.ceil(result.total/result.page_size))} · ${result.total} tasks`;$('#imports-prev').disabled=importHistoryPage===1;$('#imports-next').disabled=importHistoryPage*result.page_size>=result.total;
-    $$('#import-job-list tr').forEach(row=>{row.ondblclick=()=>selectImport(row.dataset.job);row.onkeydown=e=>{if(e.key==='Enter')selectImport(row.dataset.job);};});
+    $$('#import-job-list tr').forEach(row=>{row.ondblclick=()=>selectImport(row.dataset.job);row.onkeydown=e=>{if(e.target===row&&e.key==='Enter')selectImport(row.dataset.job);};});
     $$('.open-import-job').forEach(b=>b.onclick=()=>selectImport(b.dataset.job));
     if(selectedImport)await refreshJobFiles();
   }catch(e){message(e.message,true);}
   if(!$('#import-screen').hidden)importHistoryTimer=setTimeout(refreshImportHistory,3000);
 }
-async function selectImport(id){selectedImport=id;jobFilesPage=1;$('#import-job-detail').hidden=false;await refreshJobFiles();$('#import-job-detail').scrollIntoView({behavior:'smooth',block:'start'});}
+async function selectImport(id){selectedImport=id;jobFilesPage=1;$('#import-job-detail').hidden=false;setImportDetailExpanded(true);await refreshJobFiles();$('#import-job-detail').scrollIntoView({behavior:'smooth',block:'start'});}
+function setImportDetailExpanded(expanded){
+  $('#import-job-detail-content').hidden=!expanded;
+  const toggle=$('#import-detail-toggle');
+  toggle.setAttribute('aria-expanded',String(expanded));
+  toggle.setAttribute('aria-label',expanded?'Collapse import details':'Expand import details');
+}
+$('#import-detail-toggle').onclick=()=>setImportDetailExpanded($('#import-job-detail-content').hidden);
 async function refreshJobFiles(){
   const id=selectedImport;
   try{
@@ -288,6 +295,8 @@ async function refreshJobFiles(){
     if(id!==selectedImport)return;
     $('#import-job-title').textContent=`Files for ${job.url} (${job.status})`;
     $('#import-job-errors').innerHTML=`${job.result.limits_reached?'<p>Configured import limit reached.</p>':''}${job.result.error?`<p>${esc(job.result.error)}</p>`:''}${(job.result.errors||[]).length?'<table><thead><tr><th>FAILED URL</th><th>ERROR</th></tr></thead><tbody>'+job.result.errors.map(e=>`<tr><td>${esc(e.url)}</td><td>${esc(e.error)}</td></tr>`).join('')+'</tbody></table>':''}`;
+    const reviewItems=[...(job.result.review_items||[]),...(job.result.skipped_items||[]).map(item=>({...item,reason:`Previously skipped: ${item.reason}. Recheck this PDF.`}))];
+    if(reviewItems.length)$('#import-job-errors').insertAdjacentHTML('beforeend',`<h3>Orders needing review</h3><p>These PDFs were not imported automatically. Open the official PDF to verify the decision.</p><div class="table-scroll"><table><thead><tr><th>SUBJECT</th><th>REASON</th><th>OFFICIAL PDF</th></tr></thead><tbody>${reviewItems.map(item=>`<tr><td>${esc(item.subject||'Subject not recorded')}</td><td>${esc(item.reason)}</td><td><a href="${esc(item.url)}" target="_blank" rel="noopener">Open PDF</a></td></tr>`).join('')}</tbody></table></div>`);
     $('#import-job-files').innerHTML=files.items.map(f=>`<tr><td>${esc((f.categories?.length?f.categories:[f.order_kind||'unknown']).join(', ').toUpperCase())}</td><td>${esc(f.subject||'Subject unavailable')}</td><td><strong>${esc(f.imported_filename||f.filename)}</strong><small>${esc(f.source_url)}</small></td><td>${duplicateCell(f)}</td><td>${esc(createdTime(f.created_at))}</td><td><button class="text-button job-content" data-doc="${esc(f.document_id)}">View content</button><br><button class="text-button job-review" data-case="${esc(f.case_id)}">Review case</button></td><td><a href="/api/documents/${encodeURIComponent(f.document_id)}/pdf" target="_blank" rel="noopener">Open PDF</a><br><a href="/api/documents/${encodeURIComponent(f.document_id)}/pdf" download="${esc(f.filename)}">Download PDF</a></td></tr>`).join('');
     $('#import-job-empty').hidden=files.total!==0;$('#job-files-page').textContent=`Page ${jobFilesPage} of ${Math.max(1,Math.ceil(files.total/files.page_size))} · ${files.total} files`;$('#job-files-prev').disabled=jobFilesPage===1;$('#job-files-next').disabled=jobFilesPage*files.page_size>=files.total;
     $$('.job-content').forEach(b=>b.onclick=()=>showFileContent(b.dataset.doc));$$('.job-review').forEach(b=>b.onclick=()=>openCase(b.dataset.case));

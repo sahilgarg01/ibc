@@ -1,6 +1,8 @@
 """Conservative screening of IBBI listings and operative PDF order text."""
 import re
 
+SCREENING_VERSION = 'final-screen-v2'
+
 
 NONFINAL_LISTING = re.compile(
     r'\b(?:interlocutory|interim application|withdrawal|withdrawn|appointment|replacement|'
@@ -18,7 +20,11 @@ RESOLUTION = re.compile(
 )
 LIQUIDATION = re.compile(
     r'\bwe\s+(?:hereby\s+)?order\s+liquidation\s+of\s+the\s+corporate\s+debtor\b|'
+    r'\b(?:this\s+adjudicating\s+authority|this\s+tribunal|we)\s+(?:hereby\s+)?'
+    r'(?:orders?|directs?)\s+(?:the\s+)?liquidation\s+of\s+the\s+corporate\s+debtor\b|'
     r'\bthe\s+corporate\s+debtor\s+is\s+(?:hereby\s+)?ordered\s+to\s+be\s+liquidated\b|'
+    r'\bthe\s+corporate\s+debtor\b.{0,140}?\bis\s*,?\s*'
+    r'(?:accordingly\s*,?\s*)?(?:hereby\s+)?(?:directed|ordered)\s+to\s+be\s+liquidated\b|'
     r'\bliquidation\s+of\s+the\s+corporate\s+debtor\s+is\s+(?:hereby\s+)?ordered\b', re.I
 )
 
@@ -36,13 +42,16 @@ def final_decision(extraction):
         return None
     # Other courts often quote an earlier NCLT plan approval while deciding a
     # different dispute. Their quoted language is not this PDF's final order.
-    opening = ' '.join((pages[0].get('text') or '').split())[:1200]
+    first_page = ' '.join((pages[0].get('text') or '').split())
+    opening = ' '.join(' '.join((page.get('text') or '').split()) for page in pages[:2])[:10000]
     if re.search(r'\bIN\s+THE\s+HIGH\s+COURT\b|\bIN\s+THE\s+SUPREME\s+COURT\b|'
-                 r'\bIN\s+THE\s+NATIONAL\s+COMPANY\s+LAW\s+APPELLATE\s+TRIBUNAL\b', opening, re.I):
+                 r'\bIN\s+THE\s+NATIONAL\s+COMPANY\s+LAW\s+APPELLATE\s+TRIBUNAL\b', first_page[:1200], re.I):
         return None
     if not re.search(r'\b(?:IN\s+THE\s+)?NATIONAL\s+COMPANY\s+LAW\s+TRIBUNAL\b', opening, re.I):
         return None
-    tail = pages[-max(3, (len(pages) + 3) // 4):]
+    # The operative paragraph can precede several pages of directions or
+    # annexures; a last-quarter-only search missed real liquidation orders.
+    tail = pages[-max(3, (len(pages) + 1) // 2):]
     found = []
     for page in tail:
         flat = ' '.join((page.get('text') or '').split())

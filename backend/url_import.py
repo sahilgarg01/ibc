@@ -8,6 +8,10 @@ import httpx
 from bs4 import BeautifulSoup
 from pydantic import BaseModel, Field
 
+from .extraction import extract_pdf
+from .final_orders import final_decision
+from .ibbi_orders import parse_listing
+
 
 class ImportRequest(BaseModel):
     url: str = Field(min_length=10, max_length=2000)
@@ -63,8 +67,13 @@ def fetch(client, url, limit):
 
 def crawl(request, ingest, progress):
     result = {"pages": 0, "discovered": 0, "imported": 0, "duplicates": 0, "failed": 0,
-              "items": [], "errors": [], "limits_reached": False}
+              "skipped": 0, "review_required": 0, "items": [], "review_items": [],
+              "errors": [], "limits_reached": False}
     queue, visited, files = [request.url], set(), set()
+    ibbi_host = urlsplit(request.url).hostname in {'ibbi.gov.in', 'www.ibbi.gov.in'}
+    screen_orders = ibbi_host and (urlsplit(request.url).path.startswith('/orders/') or
+                                   urlsplit(request.url).path.startswith('/uploads/order/'))
+    subjects = {}
     def import_pdf(url, content=None):
         if url in files:
             return
@@ -76,7 +85,21 @@ def crawl(request, ingest, progress):
             prefix = content.find(b"%PDF-", 0, 8192)
             if prefix > 0:
                 content = content[prefix:]
-            record = ingest(content, urlsplit(url).path.rsplit("/", 1)[-1] or "document.pdf", url)
+            if screen_orders:
+                extraction = extract_pdf(content)
+                decision = final_decision(extraction)
+                if decision is None:
+                    unreadable = sum(len(page.get('text','').strip()) < 30 for page in extraction['pages'])
+                    reason = (f'{unreadable} PDF pages have little or no readable text; verify OCR and the official PDF'
+                              if unreadable else 'No supported operative final-order wording found; verify the official PDF')
+                    result['review_required'] += 1
+                    result['review_items'].append({'url':url,'subject':subjects.get(url,''),'reason':reason})
+                    progress(result)
+                    return
+                record = ingest(content, urlsplit(url).path.rsplit("/", 1)[-1] or "document.pdf", url,
+                                preextracted=extraction, final_decision=decision)
+            else:
+                record = ingest(content, urlsplit(url).path.rsplit("/", 1)[-1] or "document.pdf", url)
             result["duplicates" if record["duplicate"] else "imported"] += 1
             result["items"].append({"url": url, "removed_prefix_bytes": max(prefix, 0), **record})
         except (ValueError, httpx.HTTPError) as exc:
@@ -104,6 +127,12 @@ def crawl(request, ingest, progress):
                     import_pdf(final, content)
                     continue
                 soup = BeautifulSoup(content, "html.parser")
+                if screen_orders:
+                    try:
+                        rows, _, _ = parse_listing(content.decode('utf-8', errors='replace'), allow_empty=True)
+                        subjects.update({item['pdf_url']:item['subject'] for item in rows})
+                    except ValueError:
+                        pass
                 for anchor in soup.select("a[href], iframe[src], embed[src], object[data]"):
                     url = urljoin(final, anchor.get("href") or anchor.get("src") or anchor.get("data"))
                     parts = urlsplit(url)

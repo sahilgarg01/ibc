@@ -10,6 +10,105 @@ from backend.db import connection
 from backend.main import ROOT, create_app
 
 
+@pytest.mark.parametrize('method', ['manual', 'sync'])
+def test_ibbi_listing_and_pdf_screening_match_for_both_import_methods(tmp_path, monkeypatch, method):
+    rows = [
+        ('procedure', 'Appointment of RP'),
+        ('final', 'Appointment of Liquidator'),
+        ('nonfinal', 'Order'),
+        ('broken', 'Order'),
+    ]
+    html = '<table class="reporttable"><tbody>' + ''.join(
+        f'<tr><td>{i}</td><td>15 Oct, 2026</td><td><a href="/uploads/order/{name}.pdf">{name}</a></td><td>{remark}</td></tr>'
+        for i, (name, remark) in enumerate(rows, 1)) + '</tbody></table>'
+    fetched = []
+    def fetch(client, url, limit):
+        fetched.append(url)
+        return ((b'%PDF-'+url.rsplit('/', 1)[-1].encode()) if url.endswith('.pdf') else html.encode()), url
+    def extract(content):
+        if b'broken' in content:
+            raise ValueError('Invalid PDF')
+        text = ('The Corporate Debtor, Shri Vaijanath Industries Private Limited , is directed to be liquidated '
+                'in accordance with the provisions of Chapter III of the Code.' if b'final.pdf' in content and b'nonfinal' not in content
+                else 'The tax notices are quashed and this petition is disposed of.')
+        return {'pages': [{'page': 1, 'text': 'NATIONAL COMPANY LAW TRIBUNAL'}, {'page': 2, 'text': text}],
+                'warnings': [], 'subject': 'Test order'}
+    monkeypatch.setattr(url_import, 'fetch', fetch)
+    monkeypatch.setattr('backend.automatic_orders.fetch', fetch)
+    monkeypatch.setattr('backend.main.public_url', lambda url: url)
+    monkeypatch.setattr('backend.main.extract_pdf', extract)
+    monkeypatch.setattr('backend.automatic_orders.extract_pdf', extract)
+    with TestClient(create_app(tmp_path)) as client:
+        response = (client.post('/api/imports', json={'url': 'https://ibbi.gov.in/orders/nclt'})
+                    if method == 'manual' else client.post('/api/scheduler/sync?category=nclt'))
+        job_id = response.json()['id']
+        for _ in range(1000):
+            job = client.get('/api/imports/'+job_id).json()
+            if job['status'] not in ('queued', 'running'):
+                break
+            time.sleep(.02)
+        result = job['result']
+        assert result['imported'] == 1 and result['skipped'] == 2 and result['failed'] == 1, job
+        assert all(not url.endswith('/procedure.pdf') for url in fetched)
+        cases = client.get('/api/cases').json()
+        assert len(cases) == 1
+        case = client.get('/api/cases/'+cases[0]['id']).json()
+        assert case['record']['outcome'] == 'liquidation_ordered'
+        assert case['record']['outcome_evidence']['page'] == 2
+        assert case['review_status'] == 'draft'
+
+
+def test_nonfinal_url_import_is_skipped_not_failed(tmp_path, monkeypatch):
+    monkeypatch.setattr('backend.main.public_url', lambda url: url)
+    monkeypatch.setattr(url_import, 'fetch', lambda client, url, limit: (b'%PDF-test', url))
+    monkeypatch.setattr('backend.main.extract_pdf', lambda content: {
+        'pages': [{'page': 1, 'text': 'IN THE HIGH COURT OF GUJARAT. The tax notices are quashed.'}],
+        'warnings': []})
+    with TestClient(create_app(tmp_path)) as client:
+        job_id = client.post('/api/imports', json={'url': 'https://public.example/order.pdf'}).json()['id']
+        for _ in range(200):
+            job = client.get('/api/imports/'+job_id).json()
+            if job['status'] not in ('queued', 'running'):
+                break
+            time.sleep(.02)
+        assert job['status'] == 'completed', job
+        assert job['result']['skipped'] == 1
+        assert job['result']['failed'] == 0
+        assert job['result']['errors'] == []
+        assert job['result']['skipped_items'][0]['url'].endswith('/order.pdf')
+        history = client.get('/api/import-history').json()['items'][0]
+        assert history['skipped'] == 1 and history['failed'] == 0 and history['errors'] == 0
+        assert client.get('/api/cases').json() == []
+
+
+def test_ibbi_manual_import_ignores_navigation_pdfs_and_keeps_real_failures(monkeypatch):
+    pages = {
+        'https://ibbi.gov.in/orders/high-courts': b'''<a href="/uploads/structure/Organization_Chart.pdf">Chart</a>
+            <table class="reporttable"><tbody><tr><td>1</td><td>15 Oct, 2026</td><td><a href="/uploads/order/nonfinal.pdf">Order</a></td><td>Order</td></tr>
+            <tr><td>2</td><td>15 Oct, 2026</td><td><a href="/uploads/order/broken.pdf">Broken PDF</a></td><td>Order</td></tr></tbody></table>
+            <a rel="next" href="/orders/high-courts?page=2">Next</a>''',
+        'https://ibbi.gov.in/orders/high-courts?page=2': b'<table class="reporttable"></table>',
+        'https://ibbi.gov.in/uploads/order/nonfinal.pdf': b'%PDF-nonfinal',
+        'https://ibbi.gov.in/uploads/order/broken.pdf': b'broken',
+    }
+    fetched = []
+    def fetch(client, url, limit):
+        fetched.append(url)
+        return pages[url], url
+    def ingest(content, *args):
+        if content.startswith(b'%PDF-'):
+            raise url_import.NonFinalOrder()
+        raise ValueError('Invalid PDF')
+    monkeypatch.setattr(url_import, 'fetch', fetch)
+    result = url_import.crawl(url_import.ImportRequest(url='https://ibbi.gov.in/orders/high-courts'),
+                              ingest, lambda result: None)
+    assert result['pages'] == 2
+    assert result['discovered'] == 2
+    assert result['skipped'] == 1
+    assert result['failed'] == 1 and len(result['errors']) == 1
+    assert all('Organization_Chart' not in url for url in fetched)
+
+
 def test_public_addresses_and_redirects(monkeypatch):
     monkeypatch.setattr(socket, "getaddrinfo", lambda *a, **k: [(2, 1, 6, '', ('127.0.0.1', 80))])
     for url in ('http://localhost/a', 'file:///x', 'http://user:password@example.com'):

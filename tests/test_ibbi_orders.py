@@ -78,6 +78,25 @@ def test_parser_refuses_changed_page():
         raise AssertionError('Changed source layout must stop the import')
 
 
+def test_explicit_review_rejects_nonfinal_high_court_order(tmp_path, monkeypatch):
+    monkeypatch.setattr('backend.main.download_order',
+                        lambda root, order_id: ROOT / 'samples/indo-global-resolution-order.pdf')
+    monkeypatch.setattr('backend.main.extract_pdf', lambda content: {
+        'pages': [{'page': 1, 'text': 'IN THE HIGH COURT OF GUJARAT. The tax notices are quashed.'}],
+        'warnings': [], 'subject': 'High Court judgment'})
+    with TestClient(create_app(tmp_path)) as api:
+        with connection(tmp_path) as db:
+            db.execute('''INSERT INTO source_orders
+                (id,pdf_url,subject,remarks,first_seen_at,last_seen_at,pdf_status,pdf_error)
+                VALUES(?,?,?,?,?,?,?,?)''', ('high-court-review',
+                    'https://ibbi.gov.in/uploads/order/high-court.pdf', 'High Court judgment', '',
+                    '2026-10-15', '2026-10-15', 'skipped_nonfinal', 'Old screening rejection'))
+        review = api.post('/api/orders/high-court-review/review')
+        assert review.status_code == 422, review.text
+        order = api.get('/api/orders').json()['items'][0]
+        assert order['case_id'] is None
+
+
 def test_unlinked_manual_pdf_with_same_official_url_remains_visible(tmp_path):
     pdf = (ROOT / 'samples/indo-global-resolution-order.pdf').read_bytes()
     url = 'https://ibbi.gov.in/uploads/order/manual-test.pdf'
