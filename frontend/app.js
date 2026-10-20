@@ -101,6 +101,9 @@ function claimCard(value,docs) {
   const c = value || {category:'secured_financial',scope:'individual',page:1};
   return `<div class="claim-card"><div class="claim-top"><label>Creditor or category name<input class="claim-creditor" value="${esc(c.creditor)}" placeholder="Creditor name"></label><button class="text-button remove-row" type="button" aria-label="Remove claim">✕</button></div><div class="claims-grid"><label>Category<select class="claim-category">${categories.map(x => `<option value="${x}" ${c.category===x?'selected':''}>${esc(x.replace('_',' '))}</option>`).join('')}</select></label><label>Scope<select class="claim-scope"><option value="individual" ${c.scope==='individual'?'selected':''}>Individual</option><option value="category_total" ${c.scope==='category_total'?'selected':''}>Category total</option></select></label><label>Claimed ₹<input class="claim-claimed" type="number" min="0" step="0.01" value="${esc(c.claimed)}" placeholder="Unknown"></label><label>Admitted ₹<input class="claim-admitted" type="number" min="0" step="0.01" value="${esc(c.admitted)}" placeholder="Unknown"></label><label>Plan amount ₹<input class="claim-plan" type="number" min="0" step="0.01" value="${esc(c.plan_amount)}" placeholder="Unknown"></label><label>Actual paid ₹<input class="claim-paid" type="number" min="0" step="0.01" value="${esc(c.actual_paid)}" placeholder="Unknown"></label><label>Document<select class="claim-doc">${docOptions(docs,c.document_id)}</select></label><label>Page<input class="claim-page" type="number" min="1" value="${esc(c.page||1)}"></label><label class="wide">Notes<input class="claim-notes" value="${esc(c.notes)}" placeholder="Scope, conditions, caveats"></label></div></div>`;
 }
+function mentionRow(key,value,docs){
+  return `<div class="mention-row" data-array="${esc(key)}"><input class="fact-value" value="${esc(value?.value)}" placeholder="Name / company"><select class="fact-doc">${docOptions(docs,value?.document_id)}</select><input class="fact-page" type="number" min="1" value="${esc(value?.page||1)}">${value?.document_id?`<a href="/api/documents/${encodeURIComponent(value.document_id)}/pdf#page=${encodeURIComponent(value.page||1)}" target="_blank" rel="noopener">PDF page</a>`:''}<button class="text-button remove-row" type="button" aria-label="Remove name">&times;</button></div>`;
+}
 function renderDetail() { hideImportScreen();
   const c=state.detail, r=c.record, docs=c.documents;
   const extractedEvidence=docs.reduce((count,doc)=>count+(doc.extraction?.case_facts?.evidence?.length||0),0);
@@ -117,8 +120,10 @@ function renderDetail() { hideImportScreen();
   $('.detail-grid > div').insertAdjacentHTML('beforeend', `<section class="panel"><div class="panel-heading"><h2>Resolution plans</h2><button class="secondary" id="add-plan">Add plan</button></div><div class="review-fields" id="plans">${(r.plans||[]).map(p=>planCard(p,docs)).join('')}</div></section>`);
   $('#add-plan').onclick=()=>$('#plans').insertAdjacentHTML('beforeend',planCard({},docs));
   $('#add-claim').onclick = () => $('#claims').insertAdjacentHTML('beforeend',claimCard(null,docs));
+  $('#claims').closest('section').insertAdjacentHTML('afterend',`<section class="panel"><div class="panel-heading"><div><h2>Creditors and plan submitters</h2><p>Named parties mentioned in this order. A plan submitter is not necessarily the successful applicant or a subsequent owner.</p></div></div><div class="review-fields">${[['financial_creditors','Financial creditors named'],['plan_submitters','Resolution plan submitters']].map(([key,title])=>`<div class="ownership-group mention-group" data-key="${key}"><strong>${title}</strong><div class="mention-items">${(r[key]||[]).map(value=>mentionRow(key,value,docs)).join('')}</div><button class="text-button add-mention" type="button" data-key="${key}">+ Add name</button></div>`).join('')}</div></section>`);
+  $$('.add-mention').forEach(button=>button.onclick=()=>$(`.mention-group[data-key="${button.dataset.key}"] .mention-items`).insertAdjacentHTML('beforeend',mentionRow(button.dataset.key,null,docs)));
   $$('.add-owner').forEach(b=>b.onclick=()=> $(`.ownership-group[data-key="${b.dataset.key}"] .ownership-items`).insertAdjacentHTML('beforeend',ownerRow(b.dataset.key,null,docs)));
-  $('#detail').onclick = event => { if(event.target.classList.contains('remove-row')) event.target.closest('.claim-card,.ownership-row,.plan-card').remove(); };
+  $('#detail').onclick = event => { if(event.target.classList.contains('remove-row')) event.target.closest('.claim-card,.ownership-row,.mention-row,.plan-card').remove(); };
   $('#document-select').onchange = e => {state.activeDoc=e.target.value;state.page=1;renderPage();};
   $('#prev-page').onclick=()=>{state.page--;renderPage();}; $('#next-page').onclick=()=>{state.page++;renderPage();};
   $('#save').onclick=saveDraft; $('#approve').onclick=approve; $('#refill-fields').onclick=refillFields;
@@ -139,9 +144,10 @@ function renderPage() {
   $('#pdf-warning').textContent=`PDF subject: ${doc.subject||'Subject unavailable'}. ${doc.extraction.warnings.join(' ')}`;
 }
 function collectRecord() {
-  const out={outcome:$('#outcome').value,claims:[],notes:$('#notes').value,previous_owners:[],current_owners:[],subsequent_owners:[],previous_directors:[],current_directors:[],subsequent_directors:[]};
+  const out={outcome:$('#outcome').value,claims:[],financial_creditors:[],plan_submitters:[],notes:$('#notes').value,previous_owners:[],current_owners:[],subsequent_owners:[],previous_directors:[],current_directors:[],subsequent_directors:[]};
   const fact = row => {const value=$('.fact-value',row).value.trim();return value?{value,document_id:$('.fact-doc',row).value,page:Number($('.fact-page',row).value)}:null;};
   $$('[data-fact]').forEach(row=>out[row.dataset.fact]=fact(row));
+  $$('.mention-row').forEach(row=>{const f=fact(row);if(f)out[row.dataset.array].push(f);});
   $$('.ownership-row').forEach(row=>{const f=fact(row);if(f){f.din=$('.fact-din',row).value.trim()||null;f.cin=$('.fact-cin',row).value.trim().toUpperCase()||null;out[row.dataset.array].push(f);}});
   $$('#claims .claim-card').forEach(card=>{
     const creditor=$('.claim-creditor',card).value.trim(); if(!creditor)return;

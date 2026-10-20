@@ -4,8 +4,9 @@ from datetime import datetime
 from decimal import Decimal, InvalidOperation
 from .models import CaseRecord, Claim, Plan
 from .final_orders import final_decision
+from .order_narrative import enrich
 
-VERSION = 'rules-5'
+VERSION = 'rules-6'
 AMOUNT = r'(?:Rs\.?|INR|₹)?\s*([\d,]+(?:\.\d+)?)\s*(crores?|cr\.?|lakhs?|lacs?|millions?)?'
 CIN = r'[LU]\d{5}[A-Z]{2}\d{4}[A-Z]{3}\d{6}'
 
@@ -30,6 +31,8 @@ def category(name):
         return 'secured_financial'
     if 'financial' in text:
         return 'unsecured_financial' if 'unsecured' in text else 'other'
+    if 'government' in text or 'statutory' in text:
+        return 'government'
     if 'operational' in text:
         return 'operational'
     if any(word in text for word in ('employee','workmen','worker')):
@@ -257,6 +260,7 @@ def extract_case(extraction, document_id):
             amount=money(admitted_match.group(1))
             if amount is not None and Decimal(amount)>0:
                 admitted_total=(amount,number,admitted_match.group(0))
+    enrich(record, extraction, document_id, put, claim_rows, evidence, money, iso_date, category)
     if admitted_total and len(record['plans'])==1 and record['plans'][0]['admitted'] is None:
         record['plans'][0]['admitted']=admitted_total[0]
         evidence.append({'field':'plans','page':admitted_total[1],'excerpt':admitted_total[2]})
@@ -326,7 +330,8 @@ def extract_case(extraction, document_id):
 def fill_missing(current, extracted):
     """Existing entered facts take precedence over automatically extracted suggestions."""
     merged=CaseRecord.model_validate(current).model_dump(mode='json')
-    ownership_fields={'previous_owners','current_owners','subsequent_owners',
+    ownership_fields={'financial_creditors','plan_submitters',
+                      'previous_owners','current_owners','subsequent_owners',
                       'previous_directors','current_directors','subsequent_directors'}
     for field,value in extracted.items():
         if field=='notes': continue

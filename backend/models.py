@@ -66,6 +66,8 @@ class CaseRecord(StrictModel):
     applicant_cin: Fact | None = None
     fair_value: Fact | None = None
     liquidation_value: Fact | None = None
+    financial_creditors: list[Fact] = Field(default_factory=list)
+    plan_submitters: list[Fact] = Field(default_factory=list)
     previous_owners: list[Fact] = Field(default_factory=list)
     current_owners: list[Fact] = Field(default_factory=list)
     subsequent_owners: list[Fact] = Field(default_factory=list)

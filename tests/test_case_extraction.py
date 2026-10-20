@@ -227,3 +227,47 @@ def test_current_owner_is_saved_with_its_source_page(tmp_path):
         with connection(tmp_path,database_url='') as db:
             row=db.execute("SELECT name,period,page FROM people WHERE case_id=? AND role='owner' AND period='current'",(case_id,)).fetchone()
             assert row['name']=='Evidence Holdings Ltd' and row['period']=='current' and row['page']==1
+
+
+
+def test_narrative_order_reads_later_pages_without_inventing_party_claims():
+    pages = [
+        {"page": 1, "text": "IN THE NATIONAL COMPANY LAW TRIBUNAL MUMBAI BENCH-II\n"
+                             "Guruanand Silk Mills Private Limited ... Corporate Debtor\n"
+                             "CP (IB) No. 1069/MB/2023"},
+        {"page": 2, "text": "Mr. Krishna Chamadia, (hereinafter referred to as the Applicant/Resolution Professional) "
+                             "filed this application. The Resolution Plan, submitted by Siddhachal Fab Private Limited, "
+                             "the Successful Resolution Applicant, was approved."},
+        {"page": 3, "text": "This Tribunal vide its order dated 14.11.2024 admitted the Corporate Debtor. "
+                             "The CoC was constituted with Axis Bank Limited as the Sole Financial Creditor."},
+        {"page": 4, "text": "The Resolution Plans received from Dipesh Silk Mills Private Limited, "
+                             "Siddhachal Fab Private Limited and Siddhivinayak Steels. The CoC considered them."},
+        {"page": 5, "text": "The Resolution Plan provides for payment of Rs. 3,96,00,000/- to stakeholders."},
+        {"page": 6, "text": "The Fair Value of the Corporate Debtor's assets is mentioned in Form H as "
+                             "Rs.3,69,23,214/- and the Liquidation Value of the Corporate Debtor's assets "
+                             "is Rs.2,92,61,800/-."},
+        {"page": 7, "text": "As on 10.04.2025, the list of Corporate Debtor's creditors based on claims received: "
+                             "\n1. Secured Financial Creditors 10,00,93,133/- 10,00,93,133/- 1"
+                             "\n2. Unsecured Financial Creditors 19,00,30,356/- 19,00,30,356/- 1"
+                             "\n3. Operational Creditors (Government Dues) 84,48,002/- 59,14,786/- 3"
+                             "\n4. Operational Creditors (other than Workmen) 2,12,60,480/- 0.00/- 1"
+                             "\nTOTAL 31,98,31,971/- 29,60,38,275/- 6"},
+        {"page": 8, "text": "The Corporate Debtor is engaged in manufacturing of garments and textiles."},
+    ]
+    record, report = extract_case({"pages": pages}, "full-order")
+    assert record["professional"]["value"] == "Krishna Chamadia"
+    assert record["applicant"]["value"] == "Siddhachal Fab Private Limited"
+    assert record["admission_date"]["value"] == "2024-11-14"
+    assert record["industry"]["value"] == "manufacturing of garments and textiles"
+    assert record["fair_value"]["value"] == "36923214.00"
+    assert record["liquidation_value"]["value"] == "29261800.00"
+    assert record["financial_creditors"][0]["value"] == "Axis Bank Limited"
+    assert len(record["plan_submitters"]) == 3
+    assert len(record["claims"]) == 4
+    assert all(claim["scope"] == "category_total" and claim["plan_amount"] is None
+               for claim in record["claims"])
+    assert sum(int(float(claim["claimed"])) for claim in record["claims"]) == 319831971
+    assert sum(int(float(claim["admitted"])) for claim in record["claims"]) == 296038275
+    assert record["plans"][0]["amount"] == "39600000.00"
+    assert record["plans"][0]["admitted"] is None
+    assert report["evidence"]
