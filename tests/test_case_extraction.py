@@ -271,3 +271,69 @@ def test_narrative_order_reads_later_pages_without_inventing_party_claims():
     assert record["plans"][0]["amount"] == "39600000.00"
     assert record["plans"][0]["admitted"] is None
     assert report["evidence"]
+
+
+
+def test_extended_order_facts_and_matched_haircut():
+    pages = [
+        {"page": 1, "text": "IN THE NATIONAL COMPANY LAW TRIBUNAL MUMBAI BENCH-II\n"
+                             "CP (IB) No. 1069/MB/2023\n"
+                             "Guruanand Silk Mills Private Limited ...Corporate Debtor\n"
+                             "Mr. Krishna Chamadia [Registration No. IBBI/001] Resolution Professional of "
+                             "Guruanand Silk Mills Private Limited\n"
+                             "CORAM: HONBLE SHRI ASHISH KALIA, MEMBER (JUDICIAL)\n"
+                             "HONBLE SHRI BANWARI LAL MEENA, MEMBER (TECHNICAL)"},
+        {"page": 2, "text": "Claims received amounting to Rs. 31,98,31,971/-. "
+                             "The CoC was constituted with Axis Bank Limited as the Sole Financial Creditor "
+                             "having 100% voting rights."},
+        {"page": 3, "text": "One of the PRAs, namely Siddhivinayak Steel, expressed its intention to "
+                             "withdraw from the resolution process."},
+        {"page": 4, "text": "The Resolution Applicant, Siddhachal Fab Private Limited incorporated on "
+                             "22.12.2012, is a family-owned textile weaving factory based in Bhiwandi, Maharashtra. "
+                             "Harsh Haria, Director of the SRA, signed the affidavit."},
+        {"page": 5, "text": "Fair Value Liquidation Value Valuer 1 "
+                             "1 Land and Building (L&B) Valuer 1 3,44,67,000/- 2,77,67,700/- "
+                             "Average L&B 3,50,80,448/- 2,82,01,019/- "
+                             "2 Plant & Machinery (P&M) Valuer 1 15,92,516/- 7,96,528/- "
+                             "Average (P&M) 15,64,240/- 7,82,255/-"},
+        {"page": 6, "text": "TOTAL 31,98,31,971/- 29,60,38,275/- 6"},
+        {"page": 7, "text": "The summary of the payments to be made under the Resolution Plan is as follows: "
+                             "Sr. No. Particulars Amount Admitted (Rs.) Proposed Payments (Rs.) "
+                             "1. CIRP Cost - 28,00,000/- "
+                             "2. Secured Financial Creditors 10,00,93,133/- 3,43,59,166/- "
+                             "3. Unsecured Financial Creditors 19,00,30,356/- 19,00,303/- "
+                             "4. Operational Creditors (Government Dues) 59,14,786/- 59,147/- "
+                             "5. Operational Creditors (Government Dues EPFO) - 4,81,384/- "
+                             "Total Plan Value - 3,96,00,000/-"},
+    ]
+    record, report = extract_case({"pages": pages}, "order-pdf")
+    assert record["case_number"]["value"] == "CP (IB) No. 1069/MB/2023"
+    assert record["professional"]["value"] == "Krishna Chamadia"
+    assert record["total_received_claims"]["value"] == "319831971.00"
+    assert record["total_admitted_claims"]["value"] == "296038275.00"
+    assert record["coc_voting_share"]["value"] == "Axis Bank Limited: 100%"
+    assert record["withdrawn_submitters"][0]["value"] == "Siddhivinayak Steel"
+    assert len(record["judges"]) == 2
+    assert record["applicant_directors"][0]["value"] == "Harsh Haria"
+    assert record["previous_directors"] == []
+    assert len(record["asset_values"]) == 4
+    assert len(record["plan_payments"]) == 5
+    assert record["plan_payments"][0]["recipient"] == "CIRP Cost"
+    assert record["plan_payments"][0]["page"] == 7
+    assert report["evidence"]
+
+
+
+def test_existing_draft_gains_only_missing_payment_amounts():
+    current, _ = extract_case(
+        {"pages": [{"page": 1, "text": "Creditor: Bank A; Type: secured financial; "
+                                         "Claimed: Rs 100; Admitted: Rs 100"}]}, "old-pdf")
+    proposed, _ = extract_case(
+        {"pages": [{"page": 1, "text": "Creditor: Bank A; Type: secured financial; "
+                                         "Claimed: Rs 100; Admitted: Rs 100; Plan amount: Rs 20"}]}, "new-pdf")
+    updated = fill_missing(current, proposed)
+    assert updated["claims"][0]["plan_amount"] == "20.00"
+    assert updated["claims"][0]["document_id"] == "old-pdf"
+    assert fill_missing(updated, proposed)["claims"] == updated["claims"]
+    current["claims"][0]["plan_amount"] = "30.00"
+    assert fill_missing(current, proposed)["claims"][0]["plan_amount"] == "30.00"

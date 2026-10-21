@@ -127,3 +127,84 @@ def enrich(record, extraction, document_id, put, claim_rows, evidence, money, is
                 "notes": "Creditor-category total in the order; not a named party. Verify against the PDF.",
             })
             evidence.append({"field": "claims", "page": number, "excerpt": row.group(0)[:1000]})
+
+
+
+def enrich_extended(record, extraction, document_id, put, claim_rows, evidence, money, iso_date, category):
+    """Page-cited facts from labeled narrative and valuation/payment tables."""
+    def add(field, value, page, excerpt):
+        if value is not None:
+            put(field, str(value), page, excerpt)
+    def name(field, value, page, excerpt):
+        _add_fact(record, field, value, document_id, page, evidence, excerpt)
+    for page in extraction["pages"]:
+        n, text = page["page"], page["text"]
+        flat = " ".join(text.split())
+        if n <= 2:
+            for m in re.finditer(r"\bSHRI\s+([A-Z][A-Z ]{4,60}?)\s*,?\s*MEMBER\s*\((JUDICIAL|TECHNICAL)\)", flat, re.I):
+                name("judges", f"{m.group(1).title().strip()} - Member ({m.group(2).title()})", n, m.group(0))
+            if not record["professional"]:
+                m = re.search(r"\b(?:Mr|Ms|Mrs)\.?\s+([A-Z][A-Za-z .]{4,70}?)\s*(?:\[[^\]]{0,130}\]\s*)?Resolution\s+Professional\s+of\b", flat, re.I)
+                if m: put("professional", m.group(1), n, m.group(0))
+        if not record["professional"]:
+            m = re.search(r"\b(?:Mr|Ms|Mrs)\.?\s+([A-Z][A-Za-z .]{4,70}?)\s*,?\s*(?:the\s+)?(?:Applicant\s*/\s*)?Resolution\s+Professional\b", flat, re.I)
+            if m: put("professional", m.group(1), n, m.group(0))
+        if not record["case_number"] and n <= 3 and not re.search(r"IN THE HIGH COURT", extraction["pages"][0]["text"][:1200], re.I):
+            m = re.search(r"\bC\.?\s*P\.?\s*\(\s*I\.?\s*B\.?\s*\)\s*(?:No\.?\s*)?(\d{1,6})\s*(?:/|of)\s*([A-Za-z]{2,12}\s*/\s*)?(\d{4})\b", flat, re.I)
+            if m: put("case_number", m.group(0), n, m.group(0))
+        m = re.search(r"\bclaims?\s+(?:received|filed)\s+(?:amounting\s+to|of|aggregating\s+to)\s*(?:Rs\.?|INR)\s*([\d,]+(?:\.\d+)?)\s*(crores?|cr\.?|lakhs?|lacs?)?", flat, re.I)
+        if m:
+            add("total_received_claims", money("Rs. " + m.group(1) + (" " + m.group(2) if m.group(2) else "")), n, m.group(0))
+        m = re.search(r"(?m)^\s*TOTAL\s+([\d,]+)(?:/\s*-)?\s+([\d,]+)(?:/\s*-)?\s+\d+\s*$", text, re.I)
+        if m:
+            add("total_received_claims", money(m.group(1)), n, m.group(0))
+            add("total_admitted_claims", money(m.group(2)), n, m.group(0))
+        m = re.search(r"\btotal\s+(?:admitted\s+claims|claims\s+admitted)\s*[:\-]?\s*(?:Rs\.?|INR)\s*([\d,]+)", flat, re.I)
+        if m: add("total_admitted_claims", money(m.group(1)), n, m.group(0))
+        m = re.search(r"\b([A-Z][A-Za-z .&-]{3,100}?(?:Bank|Limited|Ltd\.?))\s+as\s+(?:the\s+)?(?:sole|only)\s+Financial\s+Creditor\s+having\s+(\d{1,3}(?:\.\d+)?)\s*%\s+voting\s+rights", flat, re.I)
+        if m: add("coc_voting_share", f"{m.group(1).rsplit(" with ", 1)[-1].strip()}: {m.group(2)}%", n, m.group(0))
+        m = re.search(r"\b(?:one\s+of\s+the\s+(?:PRAs|applicants),?\s+namely\s+|(?:prospective\s+)?resolution\s+applicant\s+)([A-Z][A-Za-z0-9 .&-]{3,90}?)\s*,?\s+(?:expressed\s+(?:its|their)\s+intention\s+to|decided\s+to|has)\s+withdraw\b", flat, re.I)
+        if m: name("withdrawn_submitters", m.group(1), n, m.group(0))
+        m = re.search(r"\b(?:Resolution\s+Applicant|SRA)\s*,?\s+([A-Z][A-Za-z0-9 .&-]+?(?:Private\s+Limited|Pvt\.?\s*Ltd\.?|Limited))\s+incorporated\s+on\s+(\d{1,2}[./-]\d{1,2}[./-]\d{4})", flat, re.I)
+        if m:
+            add("applicant_incorporated", iso_date(m.group(2)), n, m.group(0))
+            summary = flat[m.end():m.end()+260]
+            profile = re.search(r"\bis\s+a\s+(.{8,130}?)\s+based\s+in\s+([A-Z][A-Za-z ]{3,60}?),\s*([A-Z][A-Za-z ]{3,40})", summary, re.I)
+            if profile:
+                add("applicant_business", profile.group(1), n, profile.group(0))
+                add("applicant_location", f"{profile.group(2)}, {profile.group(3)}", n, profile.group(0))
+        m = re.search(r"\b([A-Z][a-z]+\s+[A-Z][a-z]+)\s*,?\s*Director\s+of\s+(?:the\s+)?(?:SRA|Successful\s+Resolution\s+Applicant|Resolution\s+Applicant)\b", flat, re.I)
+        if m: name("applicant_directors", m.group(1), n, m.group(0))
+        if "Fair Value" in flat and "Liquidation Value" in flat and "Valuer 1" in flat:
+            sections = re.split(r"\b(?=[1-9]\s+(?:Land\s+and\s+Building|Plant\s*(?:&|and)\s*Machinery|Security\s+and\s+Financial\s+Assets))", flat, flags=re.I)
+            for section in sections:
+                heading = re.match(r"\d+\s+(Land\s+and\s+Building|Plant\s*(?:&|and)\s*Machinery|Security\s+and\s+Financial\s+Assets)", section, re.I)
+                if not heading: continue
+                asset = " ".join(heading.group(1).split())
+                for row in re.finditer(r"\b(Valuer\s*[12]|Average(?:\s*\(?(?:L&B|P&M|S&FA)\)?)?)\s+([\d,]+)(?:/\s*-)?\s+([\d,]+)(?:/\s*-)?", section, re.I):
+                    basis = "Average" if row.group(1).lower().startswith("average") else " ".join(row.group(1).split())
+                    key = (asset.casefold(), basis.casefold())
+                    if any((v["asset"].casefold(), v["basis"].casefold()) == key for v in record["asset_values"]): continue
+                    fair, liquidation = money(row.group(2)), money(row.group(3))
+                    if fair is None or liquidation is None: continue
+                    record["asset_values"].append({"asset": asset, "basis": basis, "fair_value": fair, "liquidation_value": liquidation, "document_id": document_id, "page": n})
+                    evidence.append({"field": "asset_values", "page": n, "excerpt": row.group(0)})
+        if re.search(r"summary\s+of\s+the\s+payments\s+to\s+be\s+made\s+under\s+the\s+Resolution\s+Plan", flat, re.I):
+            table = re.split(r"\bTotal\s+Plan\s+Value\b", flat.split("Sr. No.", 1)[-1], maxsplit=1, flags=re.I)[0]
+            for row in re.finditer(r"(\d{1,2})\.\s+(.+?)(?=\s+\d{1,2}\.\s+|$)", table, re.I):
+                block = row.group(2)
+                tokens = list(AMOUNT_TOKEN.finditer(block))
+                if not tokens: continue
+                recipient = " ".join(block[:tokens[0].start()].strip(" -").split())
+                if not 3 <= len(recipient) <= 180: continue
+                amounts = [money(token.group(0).replace("/-", "")) for token in tokens]
+                if any(x is None for x in amounts): continue
+                amount, admitted = amounts[-1], amounts[-2] if len(amounts) > 1 else None
+                if any(x["recipient"].casefold() == recipient.casefold() for x in record["plan_payments"]): continue
+                record["plan_payments"].append({"recipient": recipient, "amount": amount, "admitted": admitted, "document_id": document_id, "page": n})
+                evidence.append({"field": "plan_payments", "page": n, "excerpt": row.group(0)[:1000]})
+                if "CIRP Cost" in recipient or "EPFO" in recipient or admitted is None: continue
+                matching = [c for c in claim_rows if c["category"] == category(recipient) and c.get("scope") == "category_total" and c.get("plan_amount") is None and c.get("admitted") == admitted]
+                if len(matching) == 1:
+                    matching[0]["plan_amount"] = amount
+                    matching[0]["notes"] += f" Proposed payment from plan table on PDF page {n}."

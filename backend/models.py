@@ -48,6 +48,23 @@ class Claim(StrictModel):
     notes: str = Field(default="", max_length=2000)
 
 
+class AssetValue(StrictModel):
+    asset: str = Field(min_length=2, max_length=150)
+    basis: str = Field(min_length=2, max_length=100)
+    fair_value: Decimal | None = Field(default=None, ge=0, max_digits=20, decimal_places=2)
+    liquidation_value: Decimal | None = Field(default=None, ge=0, max_digits=20, decimal_places=2)
+    document_id: str
+    page: int = Field(ge=1)
+
+
+class PlanPayment(StrictModel):
+    recipient: str = Field(min_length=2, max_length=200)
+    amount: Decimal = Field(ge=0, max_digits=20, decimal_places=2)
+    admitted: Decimal | None = Field(default=None, ge=0, max_digits=20, decimal_places=2)
+    document_id: str
+    page: int = Field(ge=1)
+
+
 class CaseRecord(StrictModel):
     # Every populated identity/ownership field carries its own source reference.
     company: Fact | None = None
@@ -66,6 +83,17 @@ class CaseRecord(StrictModel):
     applicant_cin: Fact | None = None
     fair_value: Fact | None = None
     liquidation_value: Fact | None = None
+    total_received_claims: Fact | None = None
+    total_admitted_claims: Fact | None = None
+    coc_voting_share: Fact | None = None
+    applicant_incorporated: Fact | None = None
+    applicant_business: Fact | None = None
+    applicant_location: Fact | None = None
+    applicant_directors: list[Fact] = Field(default_factory=list)
+    judges: list[Fact] = Field(default_factory=list)
+    withdrawn_submitters: list[Fact] = Field(default_factory=list)
+    asset_values: list[AssetValue] = Field(default_factory=list)
+    plan_payments: list[PlanPayment] = Field(default_factory=list)
     financial_creditors: list[Fact] = Field(default_factory=list)
     plan_submitters: list[Fact] = Field(default_factory=list)
     previous_owners: list[Fact] = Field(default_factory=list)

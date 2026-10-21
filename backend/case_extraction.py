@@ -4,9 +4,9 @@ from datetime import datetime
 from decimal import Decimal, InvalidOperation
 from .models import CaseRecord, Claim, Plan
 from .final_orders import final_decision
-from .order_narrative import enrich
+from .order_narrative import enrich, enrich_extended
 
-VERSION = 'rules-6'
+VERSION = 'rules-7'
 AMOUNT = r'(?:Rs\.?|INR|₹)?\s*([\d,]+(?:\.\d+)?)\s*(crores?|cr\.?|lakhs?|lacs?|millions?)?'
 CIN = r'[LU]\d{5}[A-Z]{2}\d{4}[A-Z]{3}\d{6}'
 
@@ -261,6 +261,7 @@ def extract_case(extraction, document_id):
             if amount is not None and Decimal(amount)>0:
                 admitted_total=(amount,number,admitted_match.group(0))
     enrich(record, extraction, document_id, put, claim_rows, evidence, money, iso_date, category)
+    enrich_extended(record, extraction, document_id, put, claim_rows, evidence, money, iso_date, category)
     if admitted_total and len(record['plans'])==1 and record['plans'][0]['admitted'] is None:
         record['plans'][0]['admitted']=admitted_total[0]
         evidence.append({'field':'plans','page':admitted_total[1],'excerpt':admitted_total[2]})
@@ -330,7 +331,7 @@ def extract_case(extraction, document_id):
 def fill_missing(current, extracted):
     """Existing entered facts take precedence over automatically extracted suggestions."""
     merged=CaseRecord.model_validate(current).model_dump(mode='json')
-    ownership_fields={'financial_creditors','plan_submitters',
+    ownership_fields={'financial_creditors','plan_submitters','applicant_directors','judges','withdrawn_submitters',
                       'previous_owners','current_owners','subsequent_owners',
                       'previous_directors','current_directors','subsequent_directors'}
     for field,value in extracted.items():
@@ -343,6 +344,30 @@ def fill_missing(current, extracted):
                 key=fact['value'].casefold().strip()
                 if key not in known:
                     merged[field].append(fact)
+                    known.add(key)
+        elif field == 'claims' and value:
+            by_key = {(row['category'], row['creditor'].casefold(), row['scope']): row
+                      for row in merged['claims']}
+            for row in value:
+                key = (row['category'], row['creditor'].casefold(), row['scope'])
+                existing = by_key.get(key)
+                if existing is None:
+                    if not any(item['category'] == row['category'] for item in merged['claims']):
+                        merged['claims'].append(row)
+                        by_key[key] = row
+                    continue
+                for amount_field in ('claimed', 'admitted', 'plan_amount'):
+                    if existing.get(amount_field) is None and row.get(amount_field) is not None:
+                        existing[amount_field] = row[amount_field]
+                        if amount_field == 'plan_amount':
+                            existing['notes'] = ((existing.get('notes') or '') + " " + (row.get('notes') or '')).strip()[:2000]
+        elif field in {'asset_values', 'plan_payments'} and value:
+            keys = ('asset', 'basis') if field == 'asset_values' else ('recipient',)
+            known = {tuple(str(item[key]).casefold() for key in keys) for item in merged[field]}
+            for item in value:
+                key = tuple(str(item[field_key]).casefold() for field_key in keys)
+                if key not in known:
+                    merged[field].append(item)
                     known.add(key)
         elif value and not merged.get(field):
             merged[field]=value
