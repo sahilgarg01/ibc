@@ -175,20 +175,45 @@ def enrich_extended(record, extraction, document_id, put, claim_rows, evidence, 
                 add("applicant_location", f"{profile.group(2)}, {profile.group(3)}", n, profile.group(0))
         m = re.search(r"\b([A-Z][a-z]+\s+[A-Z][a-z]+)\s*,?\s*Director\s+of\s+(?:the\s+)?(?:SRA|Successful\s+Resolution\s+Applicant|Resolution\s+Applicant)\b", flat, re.I)
         if m: name("applicant_directors", m.group(1), n, m.group(0))
-        if "Fair Value" in flat and "Liquidation Value" in flat and "Valuer 1" in flat:
+        if "Fair Value" in flat and "Liquidation Value" in flat:
             sections = re.split(r"\b(?=[1-9]\s+(?:Land\s+and\s+Building|Plant\s*(?:&|and)\s*Machinery|Security\s+and\s+Financial\s+Assets))", flat, flags=re.I)
             for section in sections:
                 heading = re.match(r"\d+\s+(Land\s+and\s+Building|Plant\s*(?:&|and)\s*Machinery|Security\s+and\s+Financial\s+Assets)", section, re.I)
                 if not heading: continue
                 asset = " ".join(heading.group(1).split())
-                for row in re.finditer(r"\b(Valuer\s*[12]|Average(?:\s*\(?(?:L&B|P&M|S&FA)\)?)?)\s+([\d,]+)(?:/\s*-)?\s+([\d,]+)(?:/\s*-)?", section, re.I):
-                    basis = "Average" if row.group(1).lower().startswith("average") else " ".join(row.group(1).split())
-                    key = (asset.casefold(), basis.casefold())
-                    if any((v["asset"].casefold(), v["basis"].casefold()) == key for v in record["asset_values"]): continue
-                    fair, liquidation = money(row.group(2)), money(row.group(3))
-                    if fair is None or liquidation is None: continue
-                    record["asset_values"].append({"asset": asset, "basis": basis, "fair_value": fair, "liquidation_value": liquidation, "document_id": document_id, "page": n})
-                    evidence.append({"field": "asset_values", "page": n, "excerpt": row.group(0)})
+                average = re.search(
+                    r"\bAverage(?:\s*\(?(?:L&B|P&M|S&FA)\)?)?\s+"
+                    r"([\d,]+)(?:/\s*-)?\s+([\d,]+)(?:/\s*-)?",
+                    section, re.I,
+                )
+                if average:
+                    basis, values, excerpt = "Average", average.groups(), average.group(0)
+                elif not re.search(r"\bValuer\s*\d+\b", section, re.I):
+                    # A single directly reported value needs no averaging.
+                    reported = re.search(
+                        r"([\d,]+)(?:/\s*-)?\s+([\d,]+)(?:/\s*-)?",
+                        section[heading.end():],
+                    )
+                    if not reported:
+                        continue
+                    basis, values, excerpt = "Reported", reported.groups(), reported.group(0)
+                else:
+                    # The PDF lists valuers but no supported average.
+                    continue
+                if any(v["asset"].casefold() == asset.casefold()
+                       for v in record["asset_values"]):
+                    continue
+                fair, liquidation = (money(value) for value in values)
+                if fair is None or liquidation is None:
+                    continue
+                record["asset_values"].append({
+                    "asset": asset, "basis": basis, "fair_value": fair,
+                    "liquidation_value": liquidation, "document_id": document_id,
+                    "page": n,
+                })
+                evidence.append({
+                    "field": "asset_values", "page": n, "excerpt": excerpt,
+                })
         if re.search(r"summary\s+of\s+the\s+payments\s+to\s+be\s+made\s+under\s+the\s+Resolution\s+Plan", flat, re.I):
             table = re.split(r"\bTotal\s+Plan\s+Value\b", flat.split("Sr. No.", 1)[-1], maxsplit=1, flags=re.I)[0]
             for row in re.finditer(r"(\d{1,2})\.\s+(.+?)(?=\s+\d{1,2}\.\s+|$)", table, re.I):

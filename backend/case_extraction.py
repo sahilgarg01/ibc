@@ -2,11 +2,11 @@
 import re
 from datetime import datetime
 from decimal import Decimal, InvalidOperation
-from .models import CaseRecord, Claim, Plan
+from .models import AssetValue, CaseRecord, Claim, Plan, preferred_asset_values
 from .final_orders import final_decision
 from .order_narrative import enrich, enrich_extended
 
-VERSION = 'rules-7'
+VERSION = 'rules-8'
 AMOUNT = r'(?:Rs\.?|INR|₹)?\s*([\d,]+(?:\.\d+)?)\s*(crores?|cr\.?|lakhs?|lacs?|millions?)?'
 CIN = r'[LU]\d{5}[A-Z]{2}\d{4}[A-Z]{3}\d{6}'
 
@@ -328,6 +328,18 @@ def extract_case(extraction, document_id):
     return CaseRecord.model_validate(record).model_dump(mode='json'), {'version':VERSION,'evidence':evidence,'warnings':warnings}
 
 
+def merge_asset_values(current, extracted):
+    """Replace old valuer cards when an average exists; retain unresolved evidence."""
+    rows = [AssetValue.model_validate(item) for item in current + extracted]
+    chosen = preferred_asset_values(rows)
+    chosen_keys = {" ".join(item.asset.casefold().replace("&", "and").split())
+                   for item in chosen}
+    unresolved = [item for item in current
+                  if " ".join(item["asset"].casefold().replace("&", "and").split())
+                  not in chosen_keys]
+    return unresolved + [item.model_dump(mode="json") for item in chosen]
+
+
 def fill_missing(current, extracted):
     """Existing entered facts take precedence over automatically extracted suggestions."""
     merged=CaseRecord.model_validate(current).model_dump(mode='json')
@@ -361,16 +373,18 @@ def fill_missing(current, extracted):
                         existing[amount_field] = row[amount_field]
                         if amount_field == 'plan_amount':
                             existing['notes'] = ((existing.get('notes') or '') + " " + (row.get('notes') or '')).strip()[:2000]
-        elif field in {'asset_values', 'plan_payments'} and value:
-            keys = ('asset', 'basis') if field == 'asset_values' else ('recipient',)
-            known = {tuple(str(item[key]).casefold() for key in keys) for item in merged[field]}
+        elif field == 'asset_values' and value:
+            merged[field] = merge_asset_values(merged[field], value)
+        elif field == 'plan_payments' and value:
+            known = {item['recipient'].casefold() for item in merged[field]}
             for item in value:
-                key = tuple(str(item[field_key]).casefold() for field_key in keys)
+                key = item['recipient'].casefold()
                 if key not in known:
                     merged[field].append(item)
                     known.add(key)
         elif value and not merged.get(field):
             merged[field]=value
+    merged['asset_values'] = merge_asset_values(merged['asset_values'], [])
     if merged['admission_date'] and merged['resolution_date'] and merged['admission_date']['value']>merged['resolution_date']['value']:
         for field in ('admission_date','resolution_date'):
             if not current.get(field): merged[field]=None

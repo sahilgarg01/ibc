@@ -268,6 +268,11 @@ def test_narrative_order_reads_later_pages_without_inventing_party_claims():
                for claim in record["claims"])
     assert sum(int(float(claim["claimed"])) for claim in record["claims"]) == 319831971
     assert sum(int(float(claim["admitted"])) for claim in record["claims"]) == 296038275
+    totals = metrics(CaseRecord.model_validate(record))
+    assert totals["claim_received_breakdown_inr"] == "319831971.00"
+    assert totals["claim_admitted_breakdown_inr"] == "296038275.00"
+    assert totals["claim_received_matches_total"] is True
+    assert totals["claim_admitted_matches_total"] is True
     assert record["plans"][0]["amount"] == "39600000.00"
     assert record["plans"][0]["admitted"] is None
     assert report["evidence"]
@@ -316,7 +321,9 @@ def test_extended_order_facts_and_matched_haircut():
     assert len(record["judges"]) == 2
     assert record["applicant_directors"][0]["value"] == "Harsh Haria"
     assert record["previous_directors"] == []
-    assert len(record["asset_values"]) == 4
+    assert len(record["asset_values"]) == 2
+    assert all(item["basis"] == "Average" for item in record["asset_values"])
+
     assert len(record["plan_payments"]) == 5
     assert record["plan_payments"][0]["recipient"] == "CIRP Cost"
     assert record["plan_payments"][0]["page"] == 7
@@ -337,3 +344,69 @@ def test_existing_draft_gains_only_missing_payment_amounts():
     assert fill_missing(updated, proposed)["claims"] == updated["claims"]
     current["claims"][0]["plan_amount"] = "30.00"
     assert fill_missing(current, proposed)["claims"][0]["plan_amount"] == "30.00"
+
+
+
+def test_average_asset_backfill_and_total_reconciliation():
+    source = "valuation-pdf"
+    def value(asset, basis, fair, liquidation):
+        return {"asset": asset, "basis": basis, "fair_value": fair,
+                "liquidation_value": liquidation, "document_id": source, "page": 7}
+
+    current = CaseRecord().model_dump(mode="json")
+    current["fair_value"] = {"value": "150.00", "document_id": source, "page": 7}
+    current["liquidation_value"] = {"value": "110.00", "document_id": source, "page": 7}
+    current["plans"] = [{"applicant": "Buyer Ltd", "amount": "150.00",
+                         "admitted": None, "document_id": source, "page": 8}]
+    current["plan_payments"] = [
+        {"recipient": "CIRP Cost", "amount": "10.00", "admitted": None,
+         "document_id": source, "page": 8},
+        {"recipient": "Financial Creditors", "amount": "140.00",
+         "admitted": "500.00", "document_id": source, "page": 8},
+    ]
+    current["asset_values"] = [
+        value("Land and Building", "Valuer 1", "105.00", "75.00"),
+        value("Land and Building", "Valuer 2", "95.00", "85.00"),
+        value("Land and Building", "Average", "100.00", "80.00"),
+        value("Plant and Machinery", "Valuer 1", "45.00", "25.00"),
+        value("Plant and Machinery", "Average", "50.00", "30.00"),
+    ]
+    extracted = CaseRecord().model_dump(mode="json")
+    extracted["asset_values"] = [
+        value("Land and Building", "Average", "100.00", "80.00"),
+        value("Plant and Machinery", "Average", "50.00", "30.00"),
+    ]
+    merged = fill_missing(current, extracted)
+    assert len(merged["asset_values"]) == 2
+    assert all(item["basis"] == "Average" for item in merged["asset_values"])
+    result = metrics(CaseRecord.model_validate(merged))
+    assert result["asset_fair_breakdown_inr"] == "150.00"
+    assert result["asset_liquidation_breakdown_inr"] == "110.00"
+    assert result["asset_fair_matches_total"] is True
+    assert result["asset_liquidation_matches_total"] is True
+    assert result["plan_payments_sum_inr"] == "150.00"
+    assert result["plan_payments_match_total"] is True
+    assert len(fill_missing(merged, extracted)["asset_values"]) == 2
+
+
+def test_single_reported_asset_value_without_valuers():
+    extraction = {"pages": [{"page": 1, "text":
+        "Fair Value Liquidation Value "
+        "1 Land and Building 100/- 80/- "
+        "2 Plant & Machinery 50/- 30/-"}]}
+    record, _ = extract_case(extraction, "simple-table")
+    assert [(row["asset"], row["basis"]) for row in record["asset_values"]] == [
+        ("Land and Building", "Reported"), ("Plant & Machinery", "Reported")]
+
+
+
+def test_valuer_only_evidence_is_preserved_without_claiming_an_average():
+    current = CaseRecord().model_dump(mode="json")
+    current["asset_values"] = [
+        {"asset": "Plant & Machinery", "basis": basis, "fair_value": fair,
+         "liquidation_value": "10.00", "document_id": "pdf", "page": 2}
+        for basis, fair in (("Valuer 1", "20.00"), ("Valuer 2", "22.00"))
+    ]
+    merged = fill_missing(current, CaseRecord().model_dump(mode="json"))
+    assert len(merged["asset_values"]) == 2
+    assert metrics(CaseRecord.model_validate(merged))["asset_valuations"] == []
