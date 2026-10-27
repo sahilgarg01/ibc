@@ -18,7 +18,7 @@ from fastapi.responses import FileResponse, Response, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from .db import connection, decode, initialize
-from .extraction import extract_pdf, READER_VERSION
+from .extraction import extract_pdf, needs_pdf_reread
 from .final_orders import final_decision as classify_final_order
 from .ibbi_orders import download_order
 from .models import Approval, CaseRecord, SaveRecord, metrics
@@ -335,9 +335,7 @@ def create_app(data_dir: Path | None = None):
                 raise HTTPException(404,'Document not found')
             case=get_case(db,row['case_id'])
             extraction=json.loads(row['extraction'])
-            if extraction.get('reader_version') != READER_VERSION or not all('layout_text' in p for p in extraction['pages']) or any(
-                len(p['text'].strip())<30 and not p.get('ocr_attempted') for p in extraction['pages']
-            ):
+            if needs_pdf_reread(extraction):
                 content=bytes(row['content']) if row['content'] is not None else (storage/'documents'/f'{doc_id}.pdf').read_bytes()
                 extraction=extract_pdf(content)
             facts,report=extract_case(extraction,doc_id)

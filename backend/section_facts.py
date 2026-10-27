@@ -244,9 +244,11 @@ def enrich_asset_tables(record, extraction, document_id, evidence, money):
     columns = None
     last_page = None
     unit = 'INR'
+    subtotal_groups = set()
     for page in extraction['pages']:
         if last_page is not None and page['page'] > last_page + 1:
             columns = None
+            subtotal_groups.clear()
         text = compact(normalize_text(page['text']))
         for table in page.get('tables', []):
             asset = None
@@ -273,9 +275,15 @@ def enrich_asset_tables(record, extraction, document_id, evidence, money):
                 fv, lv = table_money(cells[fi], money, unit), table_money(cells[li], money, unit)
                 if not asset or (fv is None and lv is None):
                     continue
+                row_label = ' '.join(cells[:min(fi, li)]).strip()
+                subtotal = re.match(r'^\(?([A-Z])\.?\)?\s*[.:-]?\s*Total\b', row_label, re.I)
+                if subtotal:
+                    subtotal_groups.add(subtotal.group(1).upper())
+                summary_average = bool(re.match(r'^Average\s+(?:Total|Valuation)\b', row_label, re.I)
+                    or (len(subtotal_groups) >= 2 and re.match(r'^Average\s+of\b', row_label, re.I)))
                 total_row = any(re.fullmatch(r'(?:grand\s+)?total', cell, re.I) for cell in cells[:min(fi, li)])
-                if total_row or re.search(r'\btotal\b|average of', asset, re.I):
-                    if total_row:
+                if total_row or summary_average or re.search(r'\btotal\b|average of', asset, re.I):
+                    if total_row or summary_average:
                         for field, amount in (('fair_value', fv), ('liquidation_value', lv)):
                             if amount is not None:
                                 record[field] = {'value': amount, 'document_id': document_id, 'page': page['page']}

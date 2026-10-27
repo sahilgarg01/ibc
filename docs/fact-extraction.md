@@ -1,5 +1,7 @@
 # Automatic draft facts
 
+Valuation tables continued across pages may list separate `(A.) Total` and `(B.) Total` rows followed by `Average of (A) and (B)`. The extractor preserves the individual asset rows and uses that explicit summary average for the case-level fair/liquidation fields, with its source page. Individual valuer subtotals are not treated as overall case totals. The Atharva revised table on PDF page 13 reports fair value INR 6,798,451 and liquidation value INR 6,576,505; these stated rounded values are retained.
+
 Coram extraction reads the opening Coram section on any page, including page 2 after a cover sheet, and reconstructs wrapped names using column positions. Appearance/counsel sections are excluded. Names repeated in member-role text are deduplicated.
 
 **Download PDF** is available in Source evidence for the currently selected document and in each Case library row. Cases with multiple PDFs expose a filename list. `/api/documents/{id}/pdf?download=true` returns an attachment with the original filename; the default URL continues to display the PDF inline. Both database-backed and local-file documents support downloads.

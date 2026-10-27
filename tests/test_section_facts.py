@@ -199,6 +199,30 @@ ORDER
     assert any(item['field'] == 'judges' and item['page'] == 2 for item in report['evidence'])
 
 
+def test_atharva_documented_average_populates_both_valuation_totals():
+    extraction = json.loads((Path(__file__).parent / 'fixtures/atharva-valuations.json').read_text())
+    record, report = extract_case(extraction, 'atharva')
+    assert record['fair_value']['value'] == '6798451.00'
+    assert record['liquidation_value']['value'] == '6576505.00'
+    assert record['fair_value']['page'] == record['liquidation_value']['page'] == 13
+    assert len(record['asset_values']) == 6
+    assert not any('total' in row['asset'].lower() or 'average of' in row['asset'].lower()
+                   for row in record['asset_values'])
+    assert any('Average of (A) and (B)' in item['excerpt'] for item in report['evidence']
+               if item['field'] == 'fair_value')
+
+
+def test_valuer_subtotals_do_not_become_the_overall_valuation():
+    extraction = json.loads((Path(__file__).parent / 'fixtures/atharva-valuations.json').read_text())
+    for page in extraction['pages']:
+        for table in page['tables']:
+            table[:] = [row for row in table if not (row[0] or '').startswith('Average of')]
+    record, _ = extract_case(extraction, 'without-overall-average')
+    assert record['fair_value'] is None
+    assert record['liquidation_value'] is None
+    assert len(record['asset_values']) == 6
+
+
 def test_case_library_download_metadata_and_pdf_attachment(tmp_path):
     from fastapi.testclient import TestClient
     from backend.main import ROOT, create_app

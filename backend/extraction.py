@@ -1,10 +1,23 @@
 import re
+import logging
 from io import BytesIO
 
 from pypdf import PdfReader
 from .ocr import read_scanned_pages
 
 READER_VERSION = 'shared-tables-3'
+
+
+def needs_pdf_reread(extraction):
+    """Retry incomplete cached reads after reader dependencies are repaired."""
+    pages = extraction.get('pages', [])
+    return (
+        extraction.get('reader_version') != READER_VERSION
+        or not pages
+        or any('layout_text' not in p or 'tables' not in p for p in pages)
+        or any(len(p.get('text', '').strip()) < 30 and not p.get('ocr_attempted') for p in pages)
+        or any('OCR could not process' in warning for warning in extraction.get('warnings', []))
+    )
 
 
 def has_substantial_image(page):
@@ -124,6 +137,7 @@ def extract_pdf(content: bytes) -> dict:
             for p in pages:
                 p['tables'] = tables.get(p['page'], [])
         except Exception:
+            logging.getLogger(__name__).exception('Structured PDF table extraction failed')
             warnings.append('Structured table extraction failed; table fields require review.')
         unreadable = [p['page'] for p in pages if len(p['text'].strip()) < 30]
         if unreadable:

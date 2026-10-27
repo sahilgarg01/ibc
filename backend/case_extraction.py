@@ -8,7 +8,7 @@ from .order_narrative import enrich, enrich_extended
 from .section_facts import enrich_sections, enrich_claim_tables, enrich_asset_tables
 from .party_extraction import enrich_parties
 
-VERSION = 'coram-downloads-15'
+VERSION = 'valuation-summary-16'
 AMOUNT = r'(?:Rs\.?|INR|₹)?\s*([\d,]+(?:\.\d+)?)\s*(crores?|cr\.?|lakhs?|lacs?|millions?)?'
 CIN = r'[LU]\d{5}[A-Z]{2}\d{4}[A-Z]{3}\d{6}'
 
