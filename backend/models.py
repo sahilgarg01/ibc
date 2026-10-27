@@ -55,6 +55,10 @@ class AssetValue(StrictModel):
     liquidation_value: Decimal | None = Field(default=None, ge=0, max_digits=20, decimal_places=2)
     document_id: str
     page: int = Field(ge=1)
+    fair_value_page: int | None = Field(default=None, ge=1)
+    liquidation_value_page: int | None = Field(default=None, ge=1)
+    fair_value_source_unit: Literal['INR', 'crore', 'lakh', 'million'] = 'INR'
+    liquidation_value_source_unit: Literal['INR', 'crore', 'lakh', 'million'] = 'INR'
 
 
 class PlanPayment(StrictModel):
@@ -102,6 +106,8 @@ class CaseRecord(StrictModel):
     previous_directors: list[Fact] = Field(default_factory=list)
     current_directors: list[Fact] = Field(default_factory=list)
     subsequent_directors: list[Fact] = Field(default_factory=list)
+    proposed_owners: list[Fact] = Field(default_factory=list)
+    proposed_directors: list[Fact] = Field(default_factory=list)
     outcome: Literal["unknown", "ongoing", "resolution_approved", "liquidation_ordered", "liquidation_completed"] = "unknown"
     outcome_evidence: Fact | None = None
     claims: list[Claim] = Field(default_factory=list, max_length=500)
@@ -138,7 +144,7 @@ class Approval(StrictModel):
 
 
 def preferred_asset_values(values):
-    """Use one documented average or single reported value per asset."""
+    """Prefer an average, otherwise average multiple rows or retain one row per asset."""
     grouped = {}
     for value in values:
         key = " ".join(value.asset.casefold().replace("&", "and").split())
@@ -146,11 +152,19 @@ def preferred_asset_values(values):
     chosen = []
     for rows in grouped.values():
         average = next((row for row in rows if row.basis.casefold() == "average"), None)
-        reported = next((row for row in rows
-                         if row.basis.casefold() in {"reported", "manual"}), None)
-        if average or reported:
-            chosen.append(average or reported)
-        elif len(rows) == 1 and not rows[0].basis.casefold().startswith("valuer"):
+        calculated = next((row for row in rows if row.basis.casefold() == "calculated average"), None)
+        if average or calculated:
+            chosen.append(average or calculated)
+        elif len(rows) > 1:
+            def mean(field):
+                amounts = [getattr(row, field) for row in rows if getattr(row, field) is not None]
+                return (sum(amounts, Decimal(0)) / len(amounts)).quantize(Decimal('0.01')) if amounts else None
+            chosen.append(rows[0].model_copy(update={
+                'basis': 'Calculated average',
+                'fair_value': mean('fair_value'),
+                'liquidation_value': mean('liquidation_value'),
+            }))
+        else:
             chosen.append(rows[0])
     return chosen
 

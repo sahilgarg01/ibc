@@ -5,8 +5,10 @@ from decimal import Decimal, InvalidOperation
 from .models import AssetValue, CaseRecord, Claim, Plan, preferred_asset_values
 from .final_orders import final_decision
 from .order_narrative import enrich, enrich_extended
+from .section_facts import enrich_sections, enrich_claim_tables, enrich_asset_tables
+from .party_extraction import enrich_parties
 
-VERSION = 'rules-8'
+VERSION = 'coram-downloads-15'
 AMOUNT = r'(?:Rs\.?|INR|₹)?\s*([\d,]+(?:\.\d+)?)\s*(crores?|cr\.?|lakhs?|lacs?|millions?)?'
 CIN = r'[LU]\d{5}[A-Z]{2}\d{4}[A-Z]{3}\d{6}'
 
@@ -78,6 +80,7 @@ def extract_case(extraction, document_id):
     claim_rows=[]
     table_header=None
     admitted_total=None
+    enrich_sections(record, extraction, document_id, put, evidence, money, iso_date)
     for page in extraction['pages']:
         number=page['page']
         text=page['text']
@@ -262,6 +265,11 @@ def extract_case(extraction, document_id):
                 admitted_total=(amount,number,admitted_match.group(0))
     enrich(record, extraction, document_id, put, claim_rows, evidence, money, iso_date, category)
     enrich_extended(record, extraction, document_id, put, claim_rows, evidence, money, iso_date, category)
+    enrich_parties(record, extraction, document_id, evidence, iso_date)
+    enrich_asset_tables(record, extraction, document_id, evidence, money)
+    if any(row['asset'] != 'Corporate debtor (total)' for row in record['asset_values']):
+        record['asset_values'] = [row for row in record['asset_values'] if row['asset'] != 'Corporate debtor (total)']
+    enrich_claim_tables(record, extraction, document_id, claim_rows, evidence, money, category)
     if admitted_total and len(record['plans'])==1 and record['plans'][0]['admitted'] is None:
         record['plans'][0]['admitted']=admitted_total[0]
         evidence.append({'field':'plans','page':admitted_total[1],'excerpt':admitted_total[2]})
@@ -325,12 +333,22 @@ def extract_case(extraction, document_id):
         record['resolution_date']=None
         warnings.append('Extracted dates conflict; resolution date requires review.')
     record['notes']='Automatically populated from explicit PDF evidence. Verify fields and page references before approval.'
-    return CaseRecord.model_validate(record).model_dump(mode='json'), {'version':VERSION,'evidence':evidence,'warnings':warnings}
+    record = CaseRecord.model_validate(record).model_dump(mode='json')
+    fields = [field for field in CaseRecord.model_fields if field != 'notes']
+    populated = [field for field in fields if record[field] and record[field] != 'unknown']
+    return record, {'version':VERSION,'evidence':evidence,'warnings':warnings,
+                    'populated_fields':populated,
+                    'field_status':{field: 'extracted' if field in populated else 'not_found' for field in fields},
+                    'missing_fields':[field for field in fields if field not in populated]}
 
 
 def merge_asset_values(current, extracted):
     """Replace old valuer cards when an average exists; retain unresolved evidence."""
-    rows = [AssetValue.model_validate(item) for item in current + extracted]
+    rows = []
+    for item in current + extracted:
+        row = AssetValue.model_validate(item)
+        if row not in rows:
+            rows.append(row)
     chosen = preferred_asset_values(rows)
     chosen_keys = {" ".join(item.asset.casefold().replace("&", "and").split())
                    for item in chosen}
@@ -345,7 +363,7 @@ def fill_missing(current, extracted):
     merged=CaseRecord.model_validate(current).model_dump(mode='json')
     ownership_fields={'financial_creditors','plan_submitters','applicant_directors','judges','withdrawn_submitters',
                       'previous_owners','current_owners','subsequent_owners',
-                      'previous_directors','current_directors','subsequent_directors'}
+                      'previous_directors','current_directors','subsequent_directors','proposed_owners','proposed_directors'}
     for field,value in extracted.items():
         if field=='notes': continue
         if field=='outcome':

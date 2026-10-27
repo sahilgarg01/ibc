@@ -400,7 +400,7 @@ def test_single_reported_asset_value_without_valuers():
 
 
 
-def test_valuer_only_evidence_is_preserved_without_claiming_an_average():
+def test_valuer_rows_are_averaged_when_no_average_is_reported():
     current = CaseRecord().model_dump(mode="json")
     current["asset_values"] = [
         {"asset": "Plant & Machinery", "basis": basis, "fair_value": fair,
@@ -408,5 +408,16 @@ def test_valuer_only_evidence_is_preserved_without_claiming_an_average():
         for basis, fair in (("Valuer 1", "20.00"), ("Valuer 2", "22.00"))
     ]
     merged = fill_missing(current, CaseRecord().model_dump(mode="json"))
-    assert len(merged["asset_values"]) == 2
-    assert metrics(CaseRecord.model_validate(merged))["asset_valuations"] == []
+    assert len(merged["asset_values"]) == 1
+    row = metrics(CaseRecord.model_validate(merged))["asset_valuations"][0]
+    assert row['basis'] == 'Calculated average'
+    assert row['fair_value'] == '21.00'
+    assert row['liquidation_value'] == '10.00'
+    assert fill_missing(merged, CaseRecord().model_dump(mode='json')) == merged
+
+
+def test_single_valuer_row_is_displayed_without_averaging():
+    from backend.models import AssetValue, preferred_asset_values
+    row = AssetValue(asset='Land', basis='Valuer 1', fair_value='100.00',
+                     document_id='pdf', page=1)
+    assert preferred_asset_values([row]) == [row]

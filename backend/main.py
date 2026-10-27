@@ -18,7 +18,7 @@ from fastapi.responses import FileResponse, Response, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from .db import connection, decode, initialize
-from .extraction import extract_pdf
+from .extraction import extract_pdf, READER_VERSION
 from .final_orders import final_decision as classify_final_order
 from .ibbi_orders import download_order
 from .models import Approval, CaseRecord, SaveRecord, metrics
@@ -85,6 +85,9 @@ def create_app(data_dir: Path | None = None):
                 if "document_id" in value:
                     if value["document_id"] not in docs or not 1 <= value["page"] <= docs[value["document_id"]]:
                         raise HTTPException(422, "Evidence must reference a valid page in a document attached to this case")
+                    for field in ('fair_value_page', 'liquidation_value_page'):
+                        if value.get(field) is not None and not 1 <= value[field] <= docs[value['document_id']]:
+                            raise HTTPException(422, 'Valuation evidence must reference a valid source page')
                 for child in value.values():
                     visit(child)
             elif isinstance(value, list):
@@ -332,16 +335,22 @@ def create_app(data_dir: Path | None = None):
                 raise HTTPException(404,'Document not found')
             case=get_case(db,row['case_id'])
             extraction=json.loads(row['extraction'])
-            if not all('layout_text' in p for p in extraction['pages']) or any(
+            if extraction.get('reader_version') != READER_VERSION or not all('layout_text' in p for p in extraction['pages']) or any(
                 len(p['text'].strip())<30 and not p.get('ocr_attempted') for p in extraction['pages']
             ):
                 content=bytes(row['content']) if row['content'] is not None else (storage/'documents'/f'{doc_id}.pdf').read_bytes()
                 extraction=extract_pdf(content)
             facts,report=extract_case(extraction,doc_id)
-            # A never-edited draft consists entirely of automatic suggestions;
-            # rebuild it when rules change so stale false positives are removed.
-            auto_created=(case['review_status']=='draft' and case['version']==1
-                          and extraction.get('case_facts') is not None)
+            # Multiple automatic refreshes must not turn stale suggestions into
+            # manual facts. Rebuild only a single-document draft with an intact
+            # automatic-only history; entered and approved records retain precedence.
+            history=db.execute('SELECT action,snapshot FROM audit WHERE case_id=?',(case['id'],)).fetchall()
+            automatic=sum(item['action']=='automatic_facts_extracted' for item in history)
+            manual=any(item['action'] not in {'document_added','automatic_facts_extracted'} for item in history)
+            starter=any(json.loads(item['snapshot']).get('starter_record') for item in history if item['action']=='document_added')
+            document_count=db.execute('SELECT COUNT(*) FROM documents WHERE case_id=?',(case['id'],)).fetchone()[0]
+            auto_created=(case['review_status']=='draft' and case['version']==1+automatic
+                          and document_count==1 and not manual and not starter)
             merged=facts if auto_created else fill_missing(case['record'],facts)
             extraction['case_facts']=report
             extraction['warnings'].extend(w for w in report['warnings'] if w not in extraction['warnings'])
@@ -529,12 +538,16 @@ def create_app(data_dir: Path | None = None):
         with db_connection() as db:
             cases = [decode(r) for r in db.execute("SELECT * FROM cases ORDER BY created_at DESC")]
             subjects = {}
+            pdf_documents = {}
+            for row in db.execute('SELECT id,case_id,filename FROM documents ORDER BY created_at,id'):
+                pdf_documents.setdefault(row['case_id'], []).append({'id': row['id'], 'filename': row['filename']})
             for row in db.execute("SELECT d.case_id,COALESCE(o.subject,d.subject) subject FROM documents d LEFT JOIN source_orders o ON o.document_id=d.id ORDER BY d.created_at,d.id"):
                 if row["subject"]:
                     subjects.setdefault(row["case_id"], []).append(row["subject"])
         result = []
         for case in cases:
             case["subjects"] = subjects.get(case["id"], [])
+            case['pdf_documents'] = pdf_documents.get(case['id'], [])
             record = CaseRecord.model_validate(case["record"])
             search = " ".join([f.value for f in [record.company, record.case_number, record.professional, record.cin] if f] + case["subjects"])
             if q.casefold() not in search.casefold():
@@ -570,14 +583,17 @@ def create_app(data_dir: Path | None = None):
         return case
 
     @app.get("/api/documents/{doc_id}/pdf")
-    def document_pdf(doc_id: str):
+    def document_pdf(doc_id: str, download: bool = False):
+        from urllib.parse import quote
         with db_connection() as db:
-            row = db.execute("SELECT id,content FROM documents WHERE id=?", (doc_id,)).fetchone()
+            row = db.execute("SELECT id,content,filename FROM documents WHERE id=?", (doc_id,)).fetchone()
             if not row:
                 raise HTTPException(404, "Document not found")
             if row["content"] is not None:
-                return Response(bytes(row["content"]), media_type="application/pdf")
-        return FileResponse(storage / "documents" / f"{row['id']}.pdf", media_type="application/pdf")
+                headers = {'Content-Disposition': "attachment; filename*=UTF-8''" + quote(row['filename'] or doc_id+'.pdf', safe='')} if download else None
+                return Response(bytes(row["content"]), media_type="application/pdf", headers=headers)
+        return FileResponse(storage / "documents" / f"{row['id']}.pdf", media_type="application/pdf",
+                            filename=(row['filename'] or doc_id+'.pdf') if download else None)
 
     @app.put("/api/cases/{case_id}")
     def save(case_id: str, payload: SaveRecord):

@@ -49,7 +49,12 @@ function renderList() {
   });
   $('#empty').hidden = state.cases.length !== 0;
   $('#case-list').innerHTML = cases.map(c => `<tr><td><strong>${esc(c.record.company?.value || c.subjects?.[0] || 'Untitled draft')}</strong><small>${esc(c.record.case_number?.value || 'Case number needed')}</small></td><td>${esc((c.subjects||[]).join(' · ')||'Subject unavailable')}</td><td>${esc(label(c.record.outcome))}</td><td><span class="badge ${esc(c.review_status)}">${esc(c.review_status === 'approved' ? 'Approved' : 'Needs review')}</span></td><td>${c.metrics.plan_haircut_percent == null ? '—' : `${esc(c.metrics.plan_haircut_percent)}%`}${c.review_status==='draft' ? '<small>Draft calculation</small>' : ''}</td><td>${esc(createdTime(c.created_at))}</td><td><button class="text-button open-case" data-id="${esc(c.id)}">Review →</button></td></tr>`).join('');
-  $$('.open-case').forEach(b => b.onclick = () => openCase(b.dataset.id));
+  $$('.open-case').forEach(b => {b.onclick = () => openCase(b.dataset.id);b.insertAdjacentHTML('afterend',casePdfDownloads(cases.find(c=>c.id===b.dataset.id)));});
+}
+function casePdfDownloads(c){
+  const docs=c.pdf_documents||[];
+  const links=docs.map(doc=>`<a class="case-pdf-download" href="/api/documents/${encodeURIComponent(doc.id)}/pdf?download=true" download="${esc(doc.filename)}">${docs.length===1?'Download PDF':esc(doc.filename)}</a>`).join('');
+  return docs.length>1?`<details class="case-pdf-downloads"><summary>Download PDFs (${docs.length})</summary>${links}</details>`:links;
 }
 function docOptions(docs, selected) { return docs.map(d => `<option value="${esc(d.id)}" ${d.id===selected?'selected':''}>${esc(d.subject||d.filename)}</option>`).join(''); }
 function factRow(key,title,value,docs) {
@@ -104,17 +109,24 @@ function claimCard(value,docs) {
 function mentionRow(key,value,docs){
   return `<div class="mention-row" data-array="${esc(key)}"><input class="fact-value" value="${esc(value?.value)}" placeholder="Name / company"><select class="fact-doc">${docOptions(docs,value?.document_id)}</select><input class="fact-page" type="number" min="1" value="${esc(value?.page||1)}">${value?.document_id?`<a href="/api/documents/${encodeURIComponent(value.document_id)}/pdf#page=${encodeURIComponent(value.page||1)}" target="_blank" rel="noopener">PDF page</a>`:''}<button class="text-button remove-row" type="button" aria-label="Remove name">&times;</button></div>`;
 }
+function sourceAmount(value,unit='INR'){
+  if(value==null||value===''||unit==='INR')return '';
+  const factors={crore:10000000,lakh:100000,million:1000000};
+  return factors[unit]?new Intl.NumberFormat('en-IN',{maximumFractionDigits:6}).format(Number(value)/factors[unit])+' '+unit:'';
+}
 function assetCard(v={},docs){
   const basis=v.basis||'Average';
-  const basisOptions=['Average','Reported','Manual'].map(option=>
+  const basisOptions=[...new Set(['Average','Calculated average','Reported','Manual',basis])].map(option=>
     '<option value="'+option+'" '+(basis===option?'selected':'')+'>'+option+'</option>').join('');
   return '<div class="claim-card asset-card"><div class="claims-grid">'+
     '<label>Asset<input class="asset-name" value="'+esc(v.asset)+'"></label>'+
     '<label>Valuation basis<select class="asset-basis">'+basisOptions+'</select></label>'+
-    '<label>Fair value INR<input class="asset-fair" type="number" min="0" step="0.01" value="'+esc(v.fair_value)+'"></label>'+
-    '<label>Liquidation value INR<input class="asset-liquidation" type="number" min="0" step="0.01" value="'+esc(v.liquidation_value)+'"></label>'+
+    '<label>Fair value INR<input class="asset-fair" type="number" min="0" step="0.01" value="'+esc(v.fair_value)+'"><input class="asset-fair-unit" type="hidden" value="'+esc(v.fair_value_source_unit||'INR')+'"><small class="money-source">'+esc(sourceAmount(v.fair_value,v.fair_value_source_unit)||'')+'</small></label>'+
+    '<label>Liquidation value INR<input class="asset-liquidation" type="number" min="0" step="0.01" value="'+esc(v.liquidation_value)+'"><input class="asset-liquidation-unit" type="hidden" value="'+esc(v.liquidation_value_source_unit||'INR')+'"><small class="money-source">'+esc(sourceAmount(v.liquidation_value,v.liquidation_value_source_unit)||'')+'</small></label>'+
     '<label>Document<select class="asset-doc">'+docOptions(docs,v.document_id)+'</select></label>'+
     '<label>Page<input class="asset-page" type="number" min="1" value="'+esc(v.page||1)+'"></label>'+
+    '<label>Fair value source page<input class="asset-fair-page" type="number" min="1" value="'+esc(v.fair_value_page||v.page||1)+'"></label>'+
+    '<label>Liquidation value source page<input class="asset-liquidation-page" type="number" min="1" value="'+esc(v.liquidation_value_page||v.page||1)+'"></label>'+
     '</div><button type="button" class="text-button remove-row">Remove valuation</button></div>';
 }
 function paymentCard(v={},docs){
@@ -138,6 +150,7 @@ function renderDetail() { hideImportScreen();
     esc(valuationStatus(c.metrics.claim_admitted_matches_total))+' (admitted).</p></div>';
   const assetSummary = '<div class="review-fields"><p><strong>Order totals:</strong> Fair value INR '+esc(fmt(r.fair_value?.value))+
     ' | Liquidation value INR '+esc(fmt(r.liquidation_value?.value))+'</p>'+
+    '<p class="money-source">'+['fair_value','liquidation_value'].map(field=>{const units=[...new Set((r.asset_values||[]).map(v=>v[field+'_source_unit']||'INR'))];const value=units.length===1?sourceAmount(r[field]?.value,units[0]):'';return value?(field==='fair_value'?'Fair: ':'Liquidation: ')+esc(value):'';}).filter(Boolean).join(' | ')+'</p>'+
     '<p><strong>Breakup sums:</strong> Fair value INR '+esc(fmt(c.metrics.asset_fair_breakdown_inr))+
     ' | Liquidation value INR '+esc(fmt(c.metrics.asset_liquidation_breakdown_inr))+'</p>'+
     '<p>'+esc(valuationStatus(c.metrics.asset_fair_matches_total))+' (fair); '+
@@ -159,12 +172,19 @@ function renderDetail() { hideImportScreen();
     <section class="panel"><div class="panel-heading"><h2>Review notes</h2></div><div class="notes"><textarea id="notes">${esc(r.notes)}</textarea></div><div class="actions"><button class="secondary" id="refill-fields" ${c.review_status==='approved'?'disabled':''}>Fill missing fields from PDF</button><button class="primary" id="save">Save draft</button><span id="save-state" class="section-caption">Version ${esc(c.version)}</span></div><div class="approval"><h3>Approve for analytics</h3><label>Reviewer name<input id="reviewer" value="${esc(c.reviewed_by)}" placeholder="Your name"></label><label class="check-label"><input id="confirmed" type="checkbox">I checked the values and source pages.</label><button class="secondary" id="approve">Approve record →</button></div></section>
     </div><div class="evidence-panel"><section class="panel"><div class="panel-heading"><div><h2>Source evidence</h2><p>Read the exact page before approving a value.</p></div></div><div class="evidence-controls"><select id="document-select">${docOptions(docs,state.activeDoc)}</select><button class="secondary" id="prev-page">←</button><span id="page-count"></span><button class="secondary" id="next-page">→</button><a id="view-pdf" target="_blank" rel="noopener">Open PDF ↗</a><a id="source-link" target="_blank" rel="noopener">Official source ↗</a></div><pre class="page-text" id="page-text"></pre><div class="notes" id="pdf-warning"></div></section><section class="panel"><div class="panel-heading"><div><h2>Record metrics</h2><p>Provisional until approved.</p></div></div><div class="review-fields"><strong>${c.metrics.plan_haircut_percent == null?'Not calculable':`${esc(c.metrics.plan_haircut_percent)}%`}</strong><p>${c.metrics.basis==='plan_total'?'Single plan total':`${esc(c.metrics.matched_rows)} of ${esc(c.metrics.total_rows)} claim rows matched`} · ₹${fmt(c.metrics.matched_admitted_inr)} admitted · ₹${fmt(c.metrics.matched_plan_inr)} planned</p><p>Formula: (admitted − planned) ÷ admitted. Actual payment is separate.</p></div></section></div></div>`;
   $('#back').onclick = showExplorer;
+  $('#view-pdf').insertAdjacentHTML('afterend','<a id="download-pdf" class="pdf-download-button" download>Download PDF</a>');
   $('.detail-grid > div').insertAdjacentHTML('beforeend', `<section class="panel"><div class="panel-heading"><h2>Resolution plans</h2><button class="secondary" id="add-plan">Add plan</button></div><div class="review-fields" id="plans">${(r.plans||[]).map(p=>planCard(p,docs)).join('')}</div></section>`);
   $('#add-plan').onclick=()=>$('#plans').insertAdjacentHTML('beforeend',planCard({},docs));
   $('#claims').closest('section').insertAdjacentHTML('afterend',
     '<section class="panel"><div class="panel-heading"><div><h2>Asset valuations</h2><p>One average per asset; a single reported value is shown when no averaging is needed.</p></div><button class="secondary" id="add-asset">Add valuation</button></div>'+assetSummary+'<div class="review-fields" id="asset-values">'+(c.metrics.asset_valuations||[]).map(v=>assetCard(v,docs)).join('')+'</div></section>'+
     '<section class="panel"><div class="panel-heading"><div><h2>Proposed plan payments</h2><p>Separate recipient allocations; the plan total is shown once above them. CIRP costs are excluded from creditor haircut.</p></div><button class="secondary" id="add-payment">Add payment</button></div>'+paymentSummary+'<div class="review-fields" id="plan-payments">'+(r.plan_payments||[]).map(v=>paymentCard(v,docs)).join('')+'</div></section>');
   $('#add-asset').onclick=()=>$('#asset-values').insertAdjacentHTML('beforeend',assetCard({},docs));
+  const ownershipPanel=$$('.panel').find(panel=>$('h2',panel)?.textContent==='Ownership and directors');
+  const ownershipFields=[['previous_owners','Previous owners'],['current_owners','Current owners / shareholders'],['subsequent_owners','Subsequent owners'],['previous_directors','Previous directors'],['current_directors','Current directors'],['subsequent_directors','Subsequent directors'],['proposed_owners','Proposed owners / equity allottees'],['proposed_directors','Proposed directors']];
+  $('.review-fields',ownershipPanel).innerHTML=ownershipFields.map(([key,title])=>`<div class="ownership-group" data-key="${key}"><strong>${title}</strong><div class="ownership-items">${(r[key]||[]).map(x=>ownerRow(key,x,docs)).join('')}</div>${!(r[key]||[]).length?'<p class="extraction-empty">No named '+esc(title.toLowerCase())+' found in the extracted evidence.</p>':''}<button class="text-button add-owner" data-key="${key}">+ Add name</button></div>`).join('');
+  $('p',ownershipPanel).textContent='Named roles retain their source pages. Proposed appointments and share allotments are shown separately from confirmed ownership and directorship.';
+  const missing=[...new Set(docs.flatMap(doc=>doc.extraction?.case_facts?.missing_fields||[]))].filter(field=>!r[field]||(Array.isArray(r[field])&&!r[field].length)||r[field]==='unknown');
+  if(missing.length) $('.warning',$('#detail')).insertAdjacentHTML('afterend',`<details class="extraction-coverage"><summary>${missing.length} fields need source evidence or manual review</summary><p>These fields were not found by the extractor. They may be absent from the order or use an unsupported format; check the PDF before entering a value.</p><p>${missing.map(field=>esc(field.replaceAll('_',' '))).join(' · ')}</p></details>`);
   $('#add-payment').onclick=()=>$('#plan-payments').insertAdjacentHTML('beforeend',paymentCard({},docs));
   $('#add-claim').onclick = () => $('#claims').insertAdjacentHTML('beforeend',claimCard(null,docs));
   $('#claims').closest('section').insertAdjacentHTML('afterend',`<section class="panel"><div class="panel-heading"><div><h2>Creditors and plan submitters</h2><p>Named parties mentioned in this order. A plan submitter is not necessarily the successful applicant or a subsequent owner.</p></div></div><div class="review-fields">${[['financial_creditors','Financial creditors named'],['plan_submitters','Resolution plan submitters'],['withdrawn_submitters','Withdrawn plan submitters'],['applicant_directors','Resolution applicant directors'],['judges','Judges / tribunal members']].map(([key,title])=>`<div class="ownership-group mention-group" data-key="${key}"><strong>${title}</strong><div class="mention-items">${(r[key]||[]).map(value=>mentionRow(key,value,docs)).join('')}</div><button class="text-button add-mention" type="button" data-key="${key}">+ Add name</button></div>`).join('')}</div></section>`);
@@ -187,11 +207,13 @@ function renderPage() {
   $('#prev-page').disabled=state.page===1; $('#next-page').disabled=state.page===pages.length;
   $('#page-text').textContent=pages[state.page-1].text || '[No extractable text on this page. Open the PDF to review it.]';
   $('#view-pdf').href=`/api/documents/${encodeURIComponent(doc.id)}/pdf#page=${state.page}`;
+  $('#download-pdf').href=`/api/documents/${encodeURIComponent(doc.id)}/pdf?download=true`;
+  $('#download-pdf').download=doc.filename||`${doc.id}.pdf`;
   $('#source-link').hidden=!doc.source_url; if(doc.source_url) $('#source-link').href=doc.source_url;
   $('#pdf-warning').textContent=`PDF subject: ${doc.subject||'Subject unavailable'}. ${doc.extraction.warnings.join(' ')}`;
 }
 function collectRecord() {
-  const out={outcome:$('#outcome').value,claims:[],financial_creditors:[],plan_submitters:[],withdrawn_submitters:[],applicant_directors:[],judges:[],asset_values:[],plan_payments:[],notes:$('#notes').value,previous_owners:[],current_owners:[],subsequent_owners:[],previous_directors:[],current_directors:[],subsequent_directors:[]};
+  const out={outcome:$('#outcome').value,claims:[],financial_creditors:[],plan_submitters:[],withdrawn_submitters:[],applicant_directors:[],judges:[],asset_values:[],plan_payments:[],notes:$('#notes').value,previous_owners:[],current_owners:[],subsequent_owners:[],previous_directors:[],current_directors:[],subsequent_directors:[],proposed_owners:[],proposed_directors:[]};
   const fact = row => {const value=$('.fact-value',row).value.trim();return value?{value,document_id:$('.fact-doc',row).value,page:Number($('.fact-page',row).value)}:null;};
   $$('[data-fact]').forEach(row=>out[row.dataset.fact]=fact(row));
   $$('.mention-row').forEach(row=>{const f=fact(row);if(f)out[row.dataset.array].push(f);});
@@ -203,7 +225,7 @@ function collectRecord() {
   });
   $$('#asset-values .asset-card').forEach(card=>{
     const asset=$('.asset-name',card).value.trim(), basis=$('.asset-basis',card).value.trim();
-    if(asset&&basis)out.asset_values.push({asset,basis,fair_value:$('.asset-fair',card).value||null,liquidation_value:$('.asset-liquidation',card).value||null,document_id:$('.asset-doc',card).value,page:Number($('.asset-page',card).value)});
+    if(asset&&basis)out.asset_values.push({asset,basis,fair_value:$('.asset-fair',card).value||null,liquidation_value:$('.asset-liquidation',card).value||null,document_id:$('.asset-doc',card).value,page:Number($('.asset-page',card).value),fair_value_page:Number($('.asset-fair-page',card).value)||null,liquidation_value_page:Number($('.asset-liquidation-page',card).value)||null,fair_value_source_unit:$('.asset-fair-unit',card).value,liquidation_value_source_unit:$('.asset-liquidation-unit',card).value});
   });
   $$('#plan-payments .payment-card').forEach(card=>{
     const recipient=$('.payment-recipient',card).value.trim(),amount=$('.payment-amount',card).value;

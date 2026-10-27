@@ -145,10 +145,12 @@ def enrich_extended(record, extraction, document_id, put, claim_rows, evidence, 
                 name("judges", f"{m.group(1).title().strip()} - Member ({m.group(2).title()})", n, m.group(0))
             if not record["professional"]:
                 m = re.search(r"\b(?:Mr|Ms|Mrs)\.?\s+([A-Z][A-Za-z .]{4,70}?)\s*(?:\[[^\]]{0,130}\]\s*)?Resolution\s+Professional\s+of\b", flat, re.I)
-                if m: put("professional", m.group(1), n, m.group(0))
+                if m and not re.search(r'\b(?:was|appointed|Interim)\b', m.group(1), re.I):
+                    put("professional", m.group(1), n, m.group(0))
         if not record["professional"]:
             m = re.search(r"\b(?:Mr|Ms|Mrs)\.?\s+([A-Z][A-Za-z .]{4,70}?)\s*,?\s*(?:the\s+)?(?:Applicant\s*/\s*)?Resolution\s+Professional\b", flat, re.I)
-            if m: put("professional", m.group(1), n, m.group(0))
+            if m and not re.search(r'\b(?:was|appointed|Interim)\b', m.group(1), re.I):
+                put("professional", m.group(1), n, m.group(0))
         if not record["case_number"] and n <= 3 and not re.search(r"IN THE HIGH COURT", extraction["pages"][0]["text"][:1200], re.I):
             m = re.search(r"\bC\.?\s*P\.?\s*\(\s*I\.?\s*B\.?\s*\)\s*(?:No\.?\s*)?(\d{1,6})\s*(?:/|of)\s*([A-Za-z]{2,12}\s*/\s*)?(\d{4})\b", flat, re.I)
             if m: put("case_number", m.group(0), n, m.group(0))
