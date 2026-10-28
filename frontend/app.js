@@ -57,9 +57,22 @@ function casePdfDownloads(c){
   return docs.length>1?`<details class="case-pdf-downloads"><summary>Download PDFs (${docs.length})</summary>${links}</details>`:links;
 }
 function docOptions(docs, selected) { return docs.map(d => `<option value="${esc(d.id)}" ${d.id===selected?'selected':''}>${esc(d.subject||d.filename)}</option>`).join(''); }
+function fieldReview(key, docs) {
+  const reviews=docs.map(doc=>doc.extraction?.case_facts?.field_review?.[key]).filter(Boolean);
+  return reviews.find(review=>review.status==='not_applicable') || reviews[0];
+}
+function emptyFieldStatus(key, docs) {
+  const review=fieldReview(key,docs);
+  if(!review) return '';
+  const status=review.status==='not_applicable'?'Not applicable':'Not documented';
+  const source=review.sources?.[0];
+  return `<p class="extraction-empty"><strong>${status}.</strong> ${esc(review.reason)}${source?` <button type="button" class="text-button field-source" data-doc="${esc(source.document_id)}" data-page="${esc(source.page)}">Page ${esc(source.page)}</button>`:''}</p>`;
+}
 function factRow(key,title,value,docs) {
   const required=key==='company'||key==='case_number'||(key==='outcome_evidence'&&state.detail.record.outcome!=='unknown');
-  return `<div class="field-row" data-fact="${esc(key)}"><label><span class="field-label">${esc(title)}${required?'<span class="required-mark" title="Required for approval">&nbsp;*</span>':''}</span><input class="fact-value" value="${esc(value?.value)}" placeholder="Unknown / not documented" ${required?'aria-required="true" title="Required for approval"':''}></label><label>Document<select class="fact-doc">${docOptions(docs,value?.document_id)}</select></label><label>Page<input class="fact-page" type="number" min="1" value="${esc(value?.page || 1)}"></label></div>`;
+  const review=!value?.value && fieldReview(key,docs);
+  const hint=review?.status==='not_applicable'?'Not applicable':review?'Not documented':'Unknown / not documented';
+  return `<div class="field-row" data-fact="${esc(key)}"><label><span class="field-label">${esc(title)}${required?'<span class="required-mark" title="Required for approval">&nbsp;*</span>':''}</span><input class="fact-value" value="${esc(value?.value)}" placeholder="${esc(hint)}" ${required?'aria-required="true" title="Required for approval"':''}>${review?`<small class="extraction-empty">${esc(review.reason)}</small>`:''}</label><label>Document<select class="fact-doc">${docOptions(docs,value?.document_id)}</select></label><label>Page<input class="fact-page" type="number" min="1" value="${esc(value?.page || 1)}"></label></div>`;
 }
 function markApprovalField(input, reason) {
   input.setAttribute('aria-invalid','true');
@@ -181,16 +194,35 @@ function renderDetail() { hideImportScreen();
   $('#add-asset').onclick=()=>$('#asset-values').insertAdjacentHTML('beforeend',assetCard({},docs));
   const ownershipPanel=$$('.panel').find(panel=>$('h2',panel)?.textContent==='Ownership and directors');
   const ownershipFields=[['previous_owners','Previous owners'],['current_owners','Current owners / shareholders'],['subsequent_owners','Subsequent owners'],['previous_directors','Previous directors'],['current_directors','Current directors'],['subsequent_directors','Subsequent directors'],['proposed_owners','Proposed owners / equity allottees'],['proposed_directors','Proposed directors']];
-  $('.review-fields',ownershipPanel).innerHTML=ownershipFields.map(([key,title])=>`<div class="ownership-group" data-key="${key}"><strong>${title}</strong><div class="ownership-items">${(r[key]||[]).map(x=>ownerRow(key,x,docs)).join('')}</div>${!(r[key]||[]).length?'<p class="extraction-empty">No named '+esc(title.toLowerCase())+' found in the extracted evidence.</p>':''}<button class="text-button add-owner" data-key="${key}">+ Add name</button></div>`).join('');
+  $('.review-fields',ownershipPanel).innerHTML=ownershipFields.map(([key,title])=>`<div class="ownership-group" data-key="${key}"><strong>${title}</strong><div class="ownership-items">${(r[key]||[]).map(x=>ownerRow(key,x,docs)).join('')}</div>${!(r[key]||[]).length?(emptyFieldStatus(key,docs)||'<p class="extraction-empty">No named '+esc(title.toLowerCase())+' found in the extracted evidence.</p>'):''}<button class="text-button add-owner" data-key="${key}">+ Add name</button></div>`).join('');
   $('p',ownershipPanel).textContent='Named roles retain their source pages. Proposed appointments and share allotments are shown separately from confirmed ownership and directorship.';
   const missing=[...new Set(docs.flatMap(doc=>doc.extraction?.case_facts?.missing_fields||[]))].filter(field=>!r[field]||(Array.isArray(r[field])&&!r[field].length)||r[field]==='unknown');
-  if(missing.length) $('.warning',$('#detail')).insertAdjacentHTML('afterend',`<details class="extraction-coverage"><summary>${missing.length} fields need source evidence or manual review</summary><p>These fields were not found by the extractor. They may be absent from the order or use an unsupported format; check the PDF before entering a value.</p><p>${missing.map(field=>esc(field.replaceAll('_',' '))).join(' · ')}</p></details>`);
+  if(missing.length && !docs.some(doc=>doc.extraction?.case_facts?.field_review)) $('.warning',$('#detail')).insertAdjacentHTML('afterend',`<details class="extraction-coverage"><summary>${missing.length} fields need source evidence or manual review</summary><p>These fields were not found by the extractor. They may be absent from the order or use an unsupported format; check the PDF before entering a value.</p><p>${missing.map(field=>esc(field.replaceAll('_',' '))).join(' · ')}</p></details>`);
+  const reviewedFields=[...new Set(docs.flatMap(doc=>Object.keys(doc.extraction?.case_facts?.field_review||{})))];
+  if(reviewedFields.length){
+    $('.warning',$('#detail')).insertAdjacentHTML('afterend',`<details class="extraction-coverage" open><summary>PDF check for all ${reviewedFields.length} draft fields</summary><p>Each field is filled from evidence, marked Not documented, or marked Not applicable with an explanation. Status explanations are not saved as names, dates or amounts.</p><table><thead><tr><th>Draft field</th><th>Result</th><th>Evidence / explanation</th></tr></thead><tbody>${reviewedFields.map(key=>{
+      const value=r[key],filled=Boolean(value)&&value!=='unknown'&&(!Array.isArray(value)||value.length>0),review=fieldReview(key,docs);
+      const status=filled?'Filled':review?.status==='not_applicable'?'Not applicable':'Not documented';
+      const source=filled?docs.flatMap(doc=>doc.extraction?.case_facts?.field_review?.[key]?.sources||[])[0]:review?.sources?.[0];
+      return `<tr><td>${esc(key.replaceAll('_',' '))}</td><td>${status}</td><td>${filled?'Filled from the record.':esc(review?.reason||'Review the PDF.')}${source?` <button type="button" class="text-button field-source" data-doc="${esc(source.document_id)}" data-page="${esc(source.page)}">Page ${esc(source.page)}</button>`:''}</td></tr>`;
+    }).join('')}</tbody></table></details>`);
+  }
   $('#add-payment').onclick=()=>$('#plan-payments').insertAdjacentHTML('beforeend',paymentCard({},docs));
   $('#add-claim').onclick = () => $('#claims').insertAdjacentHTML('beforeend',claimCard(null,docs));
   $('#claims').closest('section').insertAdjacentHTML('afterend',`<section class="panel"><div class="panel-heading"><div><h2>Creditors and plan submitters</h2><p>Named parties mentioned in this order. A plan submitter is not necessarily the successful applicant or a subsequent owner.</p></div></div><div class="review-fields">${[['financial_creditors','Financial creditors named'],['plan_submitters','Resolution plan submitters'],['withdrawn_submitters','Withdrawn plan submitters'],['applicant_directors','Resolution applicant directors'],['judges','Judges / tribunal members']].map(([key,title])=>`<div class="ownership-group mention-group" data-key="${key}"><strong>${title}</strong><div class="mention-items">${(r[key]||[]).map(value=>mentionRow(key,value,docs)).join('')}</div><button class="text-button add-mention" type="button" data-key="${key}">+ Add name</button></div>`).join('')}</div></section>`);
+  for(const key of ['plan_submitters','withdrawn_submitters','applicant_directors','financial_creditors','judges']){
+    if(!(r[key]||[]).length) $(`.mention-group[data-key="${key}"] .mention-items`).insertAdjacentHTML('beforeend',emptyFieldStatus(key,docs));
+  }
+  for(const [key,selector] of [['claims','#claims'],['asset_values','#asset-values'],['plan_payments','#plan-payments'],['plans','#plans']]){
+    if(!(r[key]||[]).length) $(selector).insertAdjacentHTML('beforeend',emptyFieldStatus(key,docs));
+  }
   $$('.add-mention').forEach(button=>button.onclick=()=>$(`.mention-group[data-key="${button.dataset.key}"] .mention-items`).insertAdjacentHTML('beforeend',mentionRow(button.dataset.key,null,docs)));
   $$('.add-owner').forEach(b=>b.onclick=()=> $(`.ownership-group[data-key="${b.dataset.key}"] .ownership-items`).insertAdjacentHTML('beforeend',ownerRow(b.dataset.key,null,docs)));
-  $('#detail').onclick = event => { if(event.target.classList.contains('remove-row')) event.target.closest('.claim-card,.ownership-row,.mention-row,.plan-card').remove(); };
+  $('#detail').onclick = event => {
+    const source=event.target.closest('.field-source');
+    if(source){state.activeDoc=source.dataset.doc;state.page=Number(source.dataset.page);$('#document-select').value=state.activeDoc;renderPage();}
+    if(event.target.classList.contains('remove-row')) event.target.closest('.claim-card,.ownership-row,.mention-row,.plan-card').remove();
+  };
   $('#document-select').onchange = e => {state.activeDoc=e.target.value;state.page=1;renderPage();};
   $('#prev-page').onclick=()=>{state.page--;renderPage();}; $('#next-page').onclick=()=>{state.page++;renderPage();};
   $('#save').onclick=saveDraft; $('#approve').onclick=approve; $('#refill-fields').onclick=refillFields;

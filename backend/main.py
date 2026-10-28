@@ -27,7 +27,7 @@ from .url_import import ImportRequest, public_url, crawl
 from .research_analytics import case_profiles, research_analytics, select_recent_cases
 from .automatic_orders import AutomaticOrders, ScheduleSettings, DEFAULT_CATEGORIES, set_document_category
 from .document_matching import fingerprint, candidates as document_candidates
-from .case_extraction import VERSION as EXTRACTION_VERSION, extract_case, fill_missing
+from .case_extraction import extract_case, fill_missing
 from .catalogue import catalogue_entries
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -315,11 +315,16 @@ def create_app(data_dir: Path | None = None):
         if not row:
             raise HTTPException(404, "Document not found")
         extraction=json.loads(row['extraction'])
-        if any(len(p['text'].strip())<30 and not p.get('ocr_attempted') for p in extraction['pages']):
-            populate_facts(doc_id)
+        if needs_pdf_reread(extraction):
             with db_connection() as db:
-                row=db.execute('SELECT filename,extraction FROM documents WHERE id=?',(doc_id,)).fetchone()
-        result = {"filename": row["filename"], **json.loads(row["extraction"])}
+                stored=db.execute('SELECT content FROM documents WHERE id=?',(doc_id,)).fetchone()
+            if not stored:
+                raise HTTPException(404,'Document not found')
+            content=bytes(stored['content']) if stored['content'] is not None else (storage/'documents'/f'{doc_id}.pdf').read_bytes()
+            # Source viewing may retry the reader, but cannot repopulate a saved
+            # case. Re-extraction is an explicit action, independent of reads.
+            extraction=extract_pdf(content)
+        result = {"filename": row["filename"], **extraction}
         with db_connection() as db:
             source = db.execute('SELECT subject FROM source_orders WHERE document_id=? ORDER BY order_date DESC LIMIT 1', (doc_id,)).fetchone()
         result['pdf_subject'] = result.get('subject')
@@ -558,16 +563,9 @@ def create_app(data_dir: Path | None = None):
 
     @app.get("/api/cases/{case_id}")
     def case_detail(case_id: str):
-        with db_connection() as db:
-            stored=db.execute('SELECT review_status FROM cases WHERE id=?',(case_id,)).fetchone()
-            if not stored:
-                raise HTTPException(404,'Case not found')
-            outdated=[row['id'] for row in db.execute('SELECT id,extraction FROM documents WHERE case_id=?',(case_id,))
-                      if (report:=json.loads(row['extraction']).get('case_facts'))
-                      and report.get('version')!=EXTRACTION_VERSION]
-        if stored['review_status']=='draft':
-            for doc_id in outdated:
-                populate_facts(doc_id)
+        # Reading a saved draft must not rewrite it when extraction rules change.
+        # New uploads/imports use the current extractor in ingest(); existing
+        # records change only through an explicit save or extract-facts request.
         with db_connection() as db:
             case = get_case(db, case_id)
             case["documents"] = [decode(r) for r in db.execute("SELECT id,case_id,filename,sha256,source_url,extraction,created_at,subject,order_kind FROM documents WHERE case_id=? ORDER BY created_at", (case_id,))]

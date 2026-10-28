@@ -45,9 +45,10 @@ def read_scanned_pages(content, page_numbers):
         document=pdfium.PdfDocument(content)
         try:
             for number in page_numbers:
-                page=document[number-1]
+                page=None
                 bitmap=None
                 try:
+                    page=document[number-1]
                     width,height=page.get_size()
                     scale=min(2.5,2500/max(width,height))
                     bitmap=page.render(scale=scale)
@@ -56,9 +57,13 @@ def read_scanned_pages(content, page_numbers):
                     results[number]={'text':'\n'.join(str(row[1]) for row in rows),
                         'layout_text':layout_rows(rows),
                         'confidence':round(sum(float(row[2]) for row in rows)/len(rows),3) if rows else None}
+                except Exception:
+                    # A damaged image on one page must not discard the other
+                    # pages' recognized fields or stop the rest of the PDF.
+                    results[number] = {'error': 'OCR could not process this page.'}
                 finally:
                     if bitmap is not None: bitmap.close()
-                    page.close()
+                    if page is not None: page.close()
         finally:
             document.close()
     return results

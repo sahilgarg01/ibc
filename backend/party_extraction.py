@@ -10,10 +10,10 @@ def coram_names(page):
     if not heading or len(' '.join(text[:heading.start()].split())) > 1800:
         return []
     block = text[heading.end():heading.end()+1400]
-    block = re.split(r'^\s*(?:Appearances?\b|For the\b|O\s*R\s*D\s*E\s*R\b|Per\s*:)', block, maxsplit=1, flags=re.I | re.M)[0]
+    block = re.split(r'^\s*(?:PRESENT\s*:|Appearances?\b|For the\b|O\s*R\s*D\s*E\s*R\b|Per\s*:)', block, maxsplit=1, flags=re.I | re.M)[0]
     entries = []
     for line in block.splitlines():
-        prefixes = list(re.finditer(r'\b(?:Shri\.?|Sh\.|Justice)\s+', line, re.I))
+        prefixes = list(re.finditer(r'\b(?:Shri\.?|Sh\.|Justice|Mrs\.?|Ms\.?|Mr\.?)\s+', line, re.I))
         if prefixes:
             for i, prefix in enumerate(prefixes):
                 end = prefixes[i+1].start() if i+1 < len(prefixes) else len(line)
@@ -70,6 +70,17 @@ def enrich_parties(record, extraction, document_id, evidence, iso_date):
             add('judges', name, page['page'], excerpt)
         text = normalize_text(page.get('embedded_text', page['text']))
         flat = ' '.join(text.split())
+        creditors = re.search(r'claims\s+were\s+received\s+from\s+(?:the\s+)?(.{3,200}?)\s+as\s+(?:Secured|Unsecured)\s+Financial\s+Creditors\b', flat, re.I)
+        if creditors:
+            for name in re.split(r',\s*|\s+and\s+', creditors[1], flags=re.I):
+                add('financial_creditors', name, page['page'], creditors.group())
+        if page['page'] <= 3:
+            caption_creditor = re.search(r'(?m)^\s*([A-Z][A-Za-z0-9 &.,-]{2,100})\s*\n(?:Having\s+its\s+(?:registered\s+)?(?:address|office)\s+at\s*:\s*[\s\S]{5,350}?)?[.…\s]*(?:Petitioner\s*/\s*)?Financial\s+Creditor\b', text, re.I)
+            if caption_creditor:
+                add('financial_creditors', caption_creditor.group(1), page['page'], caption_creditor.group())
+        creditor = re.search(r'\bclaim\s+was\s+received\s+from\s+(.{3,120}?)\s+as\s+the\s+sole\s+Financial\s+Creditor\b', flat, re.I)
+        if creditor:
+            add('financial_creditors', creditor.group(1), page['page'], creditor.group())
         for line in text.splitlines():
             line = line.strip()
             if re.search(r'(?:Resolution )?Plans?\s+from the following|Plans? received from the following', line, re.I):
@@ -90,7 +101,10 @@ def enrich_parties(record, extraction, document_id, evidence, iso_date):
             elif item:
                 item['value'] += ' ' + line
         if not record['applicant_business']:
-            profile = re.search(r'(?:The )?Resolution Applicant is\s+(?:an?\s+)?([^.;]{5,200})[.;]', flat, re.I)
+            group = re.search(r'\b(?:The\s+)?SRA\s+is\s+(part\s+of\s+.{5,240}?)(?:\.\s|\.$|$)', flat, re.I)
+            if group:
+                add('applicant_business', group[1], page['page'], group.group())
+            profile = re.search(r'(?:The )?Resolution Applicant is\s+(?:an?\s+)?((?!(?:entitled|permitted|required|allowed|eligible|liable|directed|requested|obliged)\b)[^.;]{5,200})[.;]', flat, re.I)
             if profile:
                 add('applicant_business', profile.group(1), page['page'], profile.group(0))
         voted = re.search(r'resolution plans? of\s+(.{5,250}?)\s+were put to vote', flat, re.I)
@@ -112,3 +126,12 @@ def enrich_parties(record, extraction, document_id, evidence, iso_date):
     if record['applicant']:
         applicant = record['applicant']
         add('plan_submitters', applicant['value'], applicant['page'], 'Successful resolution applicant: ' + applicant['value'])
+        pages = extraction['pages']
+        for i, page in enumerate(pages):
+            following = pages[i+1] if i+1 < len(pages) else None
+            joined = ' '.join((page['text'] + '\n' + (following['text'] if following else '')).split())
+            proposed = re.search(r'on\s+and\s+from\s+the\s+Closing\s+date,\s+the\s+SRA\b.{0,600}?shall\s+hold\s+100\s*%\s+shareholding\b', joined, re.I)
+            if proposed:
+                source_page = following['page'] if following and proposed.start() >= len(' '.join(page['text'].split())) else page['page']
+                add('proposed_owners', applicant['value'], source_page, proposed.group())
+                break

@@ -7,13 +7,21 @@ from .final_orders import final_decision
 from .order_narrative import enrich, enrich_extended
 from .section_facts import enrich_sections, enrich_claim_tables, enrich_asset_tables
 from .party_extraction import enrich_parties
+from .caption_facts import enrich_captions
+from .ocr_financial_rows import enrich_ocr_rows, enrich_verified_ocr_claims, enrich_ocr_coc, enrich_ocr_claim_summary
+from .plan_details import enrich_rejected_claims, enrich_plan_allocations, enrich_merged_operational_table
+from .field_rules import field_review
 
-VERSION = 'valuation-summary-16'
+VERSION = 'ocr-label-spacing-27'
 AMOUNT = r'(?:Rs\.?|INR|₹)?\s*([\d,]+(?:\.\d+)?)\s*(crores?|cr\.?|lakhs?|lacs?|millions?)?'
 CIN = r'[LU]\d{5}[A-Z]{2}\d{4}[A-Z]{3}\d{6}'
 
 
 def money(value, scale=Decimal(1)):
+    value=re.sub(r'/\s*-\s*$', '', value.strip())
+    value=re.sub(r'(?<=[\d,])\s+(?=[\d,])', '', value)
+    if value.casefold() in {'nil', 'zero'}:
+        return '0.00'
     match = re.fullmatch(AMOUNT,value.strip(),re.I)
     if not match:
         return None
@@ -45,8 +53,14 @@ def category(name):
 
 
 def iso_date(value):
-    value=value.strip()
-    for fmt in ('%Y-%m-%d','%d.%m.%Y','%d/%m/%Y','%d-%m-%Y','%d %B %Y','%d %b %Y'):
+    # Scan recognition can omit the gaps around a written month.
+    months = r'(?:January|February|March|April|May|June|July|August|September|October|November|December|Jan|Feb|Mar|Apr|Jun|Jul|Aug|Sep|Oct|Nov|Dec)'
+    value=re.sub(r'(\d)(st|nd|rd|th)?(?='+months+r'\b|'+months+r'\d)', r'\1\2 ', value, flags=re.I)
+    value=re.sub(r'('+months+r')(?=\d)', r'\1 ', value, flags=re.I)
+    value=re.sub(r'(\d{1,2})(?:st|nd|rd|th)\b', r'\1', value.strip(), flags=re.I)
+    value=' '.join(value.replace(',', ' ').replace('，', ' ').split())
+    value=re.sub(r'(?<=\d)\s*([./-])\s*(?=\d)', r'\1', value)
+    for fmt in ('%Y-%m-%d','%d.%m.%Y','%d/%m/%Y','%d-%m-%Y','%d %B %Y','%d %b %Y','%B %d %Y','%b %d %Y'):
         try:
             return datetime.strptime(value,fmt).date().isoformat()
         except ValueError:
@@ -55,6 +69,20 @@ def iso_date(value):
 
 
 def extract_case(extraction, document_id):
+    # Hybrid PDFs can contain readable paragraphs and separate image-only
+    # sections. Every narrative reader must see recovered OCR as well as the
+    # embedded text, even when the embedded text is longer. Keep the cached
+    # reader output and the original page references unchanged.
+    pages=[]
+    for page in extraction['pages']:
+        sources=[]
+        for key in ('text', 'embedded_text', 'ocr_text'):
+            text=page.get(key) or ''
+            if text.strip() and text.strip() not in sources:
+                sources.append(text.strip())
+        combined='\n\n'.join(sources)
+        pages.append({**page, 'text':combined, 'embedded_text':combined})
+    extraction={**extraction, 'pages':pages}
     record=CaseRecord().model_dump(mode='json')
     evidence=[]
     warnings=[]
@@ -66,7 +94,7 @@ def extract_case(extraction, document_id):
             record[field]={'value':value[:500],'document_id':document_id,'page':page}
             evidence.append({'field':field,'page':page,'excerpt':excerpt[:1000]})
     labels={
-        'company':r'(?:Corporate debtor|Company name)', 'cin':r'(?:Corporate debtor CIN|Debtor CIN)',
+        'company':r'(?:(?:Name of (?:the )?)?corporate debtor|Company name)', 'cin':r'(?:Corporate debtor CIN|Debtor CIN|CIN of (?:the )?corporate debtor)',
         'registered_office':r'(?:Corporate debtor registered office|Registered office of (?:the )?corporate debtor)',
         'industry':r'(?:Industry|Sector|Nature of business)',
         'case_number':r'(?:Case number|Case no\.)', 'tribunal':r'(?:NCLT bench|Tribunal)',
@@ -76,24 +104,35 @@ def extract_case(extraction, document_id):
         'fair_value':r'Fair value', 'liquidation_value':r'Liquidation value',
         'admission_date':r'(?:Admission date|CIRP commencement date)',
         'resolution_date':r'(?:Resolution approval date|Resolution date)', 'order_date':r'(?:Order date|Pronounced)',
+        'total_received_claims':r'(?:Total claims received|Total received claims)',
+        'total_admitted_claims':r'(?:Total admitted claims|Total claims admitted)',
+        'applicant_incorporated':r'(?:Resolution applicant incorporation date|Applicant incorporation date)',
+        'applicant_business':r'(?:Resolution applicant business|Applicant business)',
+        'applicant_location':r'(?:Resolution applicant registered office|Applicant registered office)',
+        'coc_voting_share':r'(?:CoC voting share|CoC voting rights)',
     }
     claim_rows=[]
     table_header=None
     admitted_total=None
+    enrich_captions(extraction, put, money, iso_date)
     enrich_sections(record, extraction, document_id, put, evidence, money, iso_date)
     for page in extraction['pages']:
         number=page['page']
         text=page['text']
         flat=' '.join(text.split())
+        # OCR may contain image-only fields even when embedded text is longer.
+        # Keep the original page number and try both sources for explicit labels.
         for field,label in labels.items():
-            match=re.search(r'^\s*'+label+r'\s*:\s*([^\n;]+)',text,re.I|re.M)
-            if match:
+            for source in (text, page.get('ocr_text', ''), page.get('embedded_text', '')):
+                match=re.search(r'^[ \t]*'+label+r'[ \t]*(?::|[–—-]|\t| {2,})[ \t]*([^\n;]+)',source,re.I|re.M)
+                if not match:
+                    continue
                 value=match.group(1).strip()
-                if field.endswith('date'):
+                if field.endswith('date') or field == 'applicant_incorporated':
                     value=iso_date(value)
                 if field in {'cin','applicant_cin'} and not re.fullmatch(CIN,value or '',re.I):
                     value=None
-                if field in {'fair_value','liquidation_value'}:
+                if field in {'fair_value','liquidation_value','total_received_claims','total_admitted_claims'}:
                     value=money(value)
                 if value:
                     put(field,value,number,match.group(0))
@@ -185,7 +224,14 @@ def extract_case(extraction, document_id):
                'subsequent_owners':r'(?:Subsequent|New|Post-resolution) owners?',
                'previous_directors':r'(?:Previous|Former|Erstwhile|Pre-resolution) directors?',
                'current_directors':r'(?:Current|Present|Existing) directors?',
-               'subsequent_directors':r'(?:Subsequent|New|Post-resolution) directors?'}
+               'subsequent_directors':r'(?:Subsequent|New|Post-resolution) directors?',
+               'proposed_owners':r'Proposed (?:owners?|shareholders?)',
+               'proposed_directors':r'Proposed directors?',
+               'applicant_directors':r'(?:Applicant|Resolution applicant|SRA) directors?',
+               'financial_creditors':r'Financial creditors?',
+               'plan_submitters':r'(?:Resolution )?Plan submitters?',
+               'withdrawn_submitters':r'Withdrawn (?:resolution )?plan submitters?',
+               'judges':r'(?:Judges?|Coram member)'}
         def add_person(field, raw, excerpt):
             din=re.search(r'\bDIN\s*[:\-]?\s*(\d{8})\b',raw,re.I)
             cin=re.search(CIN,raw,re.I)
@@ -199,7 +245,7 @@ def extract_case(extraction, document_id):
                 record[field].append(fact)
                 evidence.append({'field':field,'page':number,'excerpt':excerpt[:1000]})
         for field,label in roles.items():
-            for match in re.finditer(r'^\s*(?:'+label+r')\s*:\s*([^\n]+)',text,re.I|re.M):
+            for match in re.finditer(r'^\s*(?:'+label.replace(' ', r'\s*')+r')\s*:\s*([^\n]+)',text,re.I|re.M):
                 add_person(field,match.group(1),match.group(0))
         sentence_role={'previous':'previous','former':'previous','erstwhile':'previous',
                        'current':'current','present':'current','existing':'current',
@@ -213,11 +259,15 @@ def extract_case(extraction, document_id):
         for match in re.finditer(r'^\s*Creditor\s*:\s*([^\n]+)',text,re.I|re.M):
             parts=[p.strip() for p in match.group(1).split(';')]
             values=dict(p.split(':',1) for p in parts[1:] if ':' in p)
-            values={k.strip().casefold():v.strip() for k,v in values.items()}
+            # Normalize known metadata keys, not creditor identities or amounts.
+            keys={'planamount':'plan amount','actualpaid':'actual paid','actualpayment':'actual payment'}
+            values={keys.get(re.sub(r'\s+', '', k.casefold()),k.strip().casefold()):v.strip() for k,v in values.items()}
             c={'creditor':parts[0],'category':category(values.get('type','other')),'document_id':document_id,'page':number,
                'claimed':money(values.get('claimed',values.get('filed',''))),'admitted':money(values.get('admitted','')),
-               'plan_amount':money(values.get('plan amount','')),'notes':'Automatically extracted; verify source.'}
-            if c['claimed'] is not None or c['admitted'] is not None:
+               'plan_amount':money(values.get('plan amount','')),
+               'actual_paid':money(values.get('actual paid',values.get('actual payment',''))),
+               'notes':'Automatically extracted; verify source.'}
+            if any(c[field] is not None for field in ('claimed','admitted','plan_amount','actual_paid')):
                 claim_rows.append(c)
                 evidence.append({'field':'claims','page':number,'excerpt':match.group(0)[:1000]})
         layout=page.get('layout_text',text)
@@ -251,7 +301,7 @@ def extract_case(extraction, document_id):
                     'claimed':money(match.group(2),scale),'admitted':money(match.group(3),scale),'plan_amount':money(match.group(4),scale),
                     'document_id':document_id,'page':number,'notes':'Automatically extracted from financial table; verify column units.'})
                 evidence.append({'field':'claims','page':number,'excerpt':line.strip()})
-        plan=re.search(r'^\s*(?:Resolution plan amount|Total (?:resolution|plan) amount|(?:Total )?amount under (?:the )?resolution plan|Plan amount)\s*:\s*([^\n;]+)',text,re.I|re.M)
+        plan=re.search(r'^\s*(?:Resolution\s*plan\s*amount|Total (?:resolution|plan) amount|(?:Total )?amount under (?:the )?resolution plan|Plan\s*amount)\s*:\s*([^\n;]+)',text,re.I|re.M)
         if plan and record.get('applicant'):
             amount=money(plan.group(1))
             if amount is not None:
@@ -265,11 +315,24 @@ def extract_case(extraction, document_id):
                 admitted_total=(amount,number,admitted_match.group(0))
     enrich(record, extraction, document_id, put, claim_rows, evidence, money, iso_date, category)
     enrich_extended(record, extraction, document_id, put, claim_rows, evidence, money, iso_date, category)
+    if not record['irp'] and record['professional']:
+        for page in extraction['pages']:
+            match=re.search(r'(?:appointed\s+the\s+Applicant\s+as|the\s+Applicant\s+was\s+appointed\s+as)\s+the\s+Interim\s+Resolution\s+Professional\b', ' '.join(page['text'].split()), re.I)
+            if match:
+                put('irp',record['professional']['value'],page['page'],match.group())
+                break
     enrich_parties(record, extraction, document_id, evidence, iso_date)
     enrich_asset_tables(record, extraction, document_id, evidence, money)
     if any(row['asset'] != 'Corporate debtor (total)' for row in record['asset_values']):
         record['asset_values'] = [row for row in record['asset_values'] if row['asset'] != 'Corporate debtor (total)']
     enrich_claim_tables(record, extraction, document_id, claim_rows, evidence, money, category)
+    enrich_ocr_rows(record, extraction, document_id, claim_rows, evidence, money, category)
+    enrich_verified_ocr_claims(record, extraction, document_id, claim_rows, evidence, money)
+    enrich_ocr_coc(record, extraction, document_id, claim_rows, evidence, money, warnings)
+    enrich_ocr_claim_summary(record, extraction, document_id, claim_rows, evidence, warnings)
+    enrich_rejected_claims(record, extraction, document_id, claim_rows, evidence, money)
+    enrich_plan_allocations(record, extraction, document_id, evidence, money, warnings)
+    enrich_merged_operational_table(record, extraction, document_id, claim_rows, evidence, money)
     if admitted_total and len(record['plans'])==1 and record['plans'][0]['admitted'] is None:
         record['plans'][0]['admitted']=admitted_total[0]
         evidence.append({'field':'plans','page':admitted_total[1],'excerpt':admitted_total[2]})
@@ -327,6 +390,20 @@ def extract_case(extraction, document_id):
             warnings.append('Conflicting category totals and individual claims need review; no automatic combination was made.')
             continue
         record['claims'].append(row);seen.add(key)
+        # A labeled creditor's proposed payment is also an allocation. Reuse
+        # its evidence when a separate allocation table is missing/unreadable.
+        # Do not convert category totals, rejected schedules or actual payments.
+        if (row['scope'] == 'individual' and row['plan_amount'] is not None and
+                row['notes'] == 'Automatically extracted; verify source.' and
+                not any(item['recipient'].casefold() == row['creditor'].casefold()
+                        for item in record['plan_payments'])):
+            record['plan_payments'].append({'recipient': row['creditor'],
+                'amount': row['plan_amount'], 'admitted': row['admitted'],
+                'document_id': row['document_id'], 'page': row['page']})
+            source = next((item['excerpt'] for item in evidence
+                           if item['field'] == 'claims' and item['page'] == row['page']
+                           and row['creditor'] in item['excerpt']), row['notes'])
+            evidence.append({'field': 'plan_payments', 'page': row['page'], 'excerpt': source})
     if record['outcome']=='resolution_approved' and record['order_date'] and not record['resolution_date']:
         record['resolution_date']=record['order_date'].copy()
     if record['admission_date'] and record['resolution_date'] and record['admission_date']['value']>record['resolution_date']['value']:
@@ -337,6 +414,7 @@ def extract_case(extraction, document_id):
     fields = [field for field in CaseRecord.model_fields if field != 'notes']
     populated = [field for field in fields if record[field] and record[field] != 'unknown']
     return record, {'version':VERSION,'evidence':evidence,'warnings':warnings,
+                    'field_review':field_review(record, extraction, document_id, evidence),
                     'populated_fields':populated,
                     'field_status':{field: 'extracted' if field in populated else 'not_found' for field in fields},
                     'missing_fields':[field for field in fields if field not in populated]}
@@ -382,11 +460,13 @@ def fill_missing(current, extracted):
                 key = (row['category'], row['creditor'].casefold(), row['scope'])
                 existing = by_key.get(key)
                 if existing is None:
-                    if not any(item['category'] == row['category'] for item in merged['claims']):
+                    same_category = [item for item in merged['claims'] if item['category'] == row['category']]
+                    if not same_category or (row['scope'] == 'individual' and
+                            all(item['scope'] == 'individual' for item in same_category)):
                         merged['claims'].append(row)
                         by_key[key] = row
                     continue
-                for amount_field in ('claimed', 'admitted', 'plan_amount'):
+                for amount_field in ('claimed', 'admitted', 'plan_amount', 'actual_paid'):
                     if existing.get(amount_field) is None and row.get(amount_field) is not None:
                         existing[amount_field] = row[amount_field]
                         if amount_field == 'plan_amount':

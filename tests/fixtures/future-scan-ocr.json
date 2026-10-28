@@ -1,0 +1,44 @@
+{
+  "pages": [
+    {
+      "page": 1,
+      "text": "INTHENATIONALCOMPANYLAWTRIBUNAL\nCompanyname:\nFutureScannedIndustriesLimited\nDebtor CIN:\nU12345MH2010PTC123456\nRegisteredofficeofcorporatedebtor:\n10MarketRoad,Mumbai400001\nSector:\nIndustrial machinery\nCaseno.:\nCP501/2025\nNCLTbench:\nNCLTMumbaiCourt Il\nCIRPcommencementdate:\n1stFebruary，2025\nDateofresolutionplanapproval:\n2ndMarch,2026\nDateoforder:\nMarch2,2026\nIRP:\nAnitaRao\nRP:\nMeeraShah\nNameof liquidator:\nDevPatel",
+      "layout_text": "INTHENATIONALCOMPANYLAWTRIBUNAL\nCompanyname:\nFutureScannedIndustriesLimited\nDebtor CIN:\nU12345MH2010PTC123456\nRegisteredofficeofcorporatedebtor:\n10MarketRoad,Mumbai400001\nSector:\nIndustrial machinery\nCaseno.:\nCP501/2025\nNCLTbench:\nNCLTMumbaiCourt Il\nCIRPcommencementdate:\n1stFebruary，2025\nDateofresolutionplanapproval:\n2ndMarch,2026\nDateoforder:\nMarch2,2026\nIRP:\nAnitaRao\nRP:\nMeeraShah\nNameof liquidator:\nDevPatel",
+      "extraction_method": "ocr",
+      "tables": [],
+      "ocr_confidence": 0.973,
+      "ocr_text": "INTHENATIONALCOMPANYLAWTRIBUNAL\nCompanyname:\nFutureScannedIndustriesLimited\nDebtor CIN:\nU12345MH2010PTC123456\nRegisteredofficeofcorporatedebtor:\n10MarketRoad,Mumbai400001\nSector:\nIndustrial machinery\nCaseno.:\nCP501/2025\nNCLTbench:\nNCLTMumbaiCourt Il\nCIRPcommencementdate:\n1stFebruary，2025\nDateofresolutionplanapproval:\n2ndMarch,2026\nDateoforder:\nMarch2,2026\nIRP:\nAnitaRao\nRP:\nMeeraShah\nNameof liquidator:\nDevPatel",
+      "ocr_layout_text": "INTHENATIONALCOMPANYLAWTRIBUNAL\nCompanyname:\nFutureScannedIndustriesLimited\nDebtor CIN:\nU12345MH2010PTC123456\nRegisteredofficeofcorporatedebtor:\n10MarketRoad,Mumbai400001\nSector:\nIndustrial machinery\nCaseno.:\nCP501/2025\nNCLTbench:\nNCLTMumbaiCourt Il\nCIRPcommencementdate:\n1stFebruary，2025\nDateofresolutionplanapproval:\n2ndMarch,2026\nDateoforder:\nMarch2,2026\nIRP:\nAnitaRao\nRP:\nMeeraShah\nNameof liquidator:\nDevPatel"
+    },
+    {
+      "page": 2,
+      "text": "Name of successful resolution applicant(SRA):\nSummitHoldingsLimited\nResolution applicantCIN:\nU54321MH2012PLC654321\nTotalfairvalue:\nINR10,00,00,000/-\nAverageliquidationvalue:\nRs8crore/-\nTotal claimsfiled:\nRs20crore\nTotalclaimsadmitted:\nRs15crore\nCoCvoting share:\n91.75%\nDateofincorporationofSRA:\nJune5,2012\nNatureof businessofSRA:\nEngineeringservices\nLocationofSRA:\n20LakeRoad,Pune400002",
+      "layout_text": "Name of successful resolution applicant(SRA):\nSummitHoldingsLimited\nResolution applicantCIN:\nU54321MH2012PLC654321\nTotalfairvalue:\nINR10,00,00,000/-\nAverageliquidationvalue:\nRs8crore/-\nTotal claimsfiled:\nRs20crore\nTotalclaimsadmitted:\nRs15crore\nCoCvoting share:\n91.75%\nDateofincorporationofSRA:\nJune5,2012\nNatureof businessofSRA:\nEngineeringservices\nLocationofSRA:\n20LakeRoad,Pune400002",
+      "extraction_method": "ocr",
+      "tables": [],
+      "ocr_confidence": 0.971,
+      "ocr_text": "Name of successful resolution applicant(SRA):\nSummitHoldingsLimited\nResolution applicantCIN:\nU54321MH2012PLC654321\nTotalfairvalue:\nINR10,00,00,000/-\nAverageliquidationvalue:\nRs8crore/-\nTotal claimsfiled:\nRs20crore\nTotalclaimsadmitted:\nRs15crore\nCoCvoting share:\n91.75%\nDateofincorporationofSRA:\nJune5,2012\nNatureof businessofSRA:\nEngineeringservices\nLocationofSRA:\n20LakeRoad,Pune400002",
+      "ocr_layout_text": "Name of successful resolution applicant(SRA):\nSummitHoldingsLimited\nResolution applicantCIN:\nU54321MH2012PLC654321\nTotalfairvalue:\nINR10,00,00,000/-\nAverageliquidationvalue:\nRs8crore/-\nTotal claimsfiled:\nRs20crore\nTotalclaimsadmitted:\nRs15crore\nCoCvoting share:\n91.75%\nDateofincorporationofSRA:\nJune5,2012\nNatureof businessofSRA:\nEngineeringservices\nLocationofSRA:\n20LakeRoad,Pune400002"
+    },
+    {
+      "page": 3,
+      "text": "Applicantdirector:ArunShah;DIN:23456789\nJudge:JusticeKavitaRao\nWithdrawnplansubmitter:CancelledHoldingsLimited\nFinancialcreditor:FirstBankLimited\nPlansubmitter:SummitHoldingsLimited\nPreviousowner:PastHoldingLimited\nCurrentowner:CurrentHoldingLimited\nSubsequentowner:LaterHoldingLimited\nPreviousdirector:PriorDirector\nCurrentdirector:CurrentDirector\nSubsequentdirector:LaterDirector\nProposedowner:FutureHoldingLimited\nProposeddirector:FutureDirector\nCreditor:FirstBankLimited;Type:securedfinancial;Claimed:Rs20crore;Admitted:Rs15crore;Planamount:Rs6crore;Actualpaid:Rs1crore\nPlanamount:Rs6crore",
+      "layout_text": "Applicantdirector:ArunShah;DIN:23456789\nJudge:JusticeKavitaRao\nWithdrawnplansubmitter:CancelledHoldingsLimited\nFinancialcreditor:FirstBankLimited\nPlansubmitter:SummitHoldingsLimited\nPreviousowner:PastHoldingLimited\nCurrentowner:CurrentHoldingLimited\nSubsequentowner:LaterHoldingLimited\nPreviousdirector:PriorDirector\nCurrentdirector:CurrentDirector\nSubsequentdirector:LaterDirector\nProposedowner:FutureHoldingLimited\nProposeddirector:FutureDirector\nCreditor:FirstBankLimited;Type:securedfinancial;Claimed:Rs20crore;Admitted:Rs15crore;Planamount:Rs6crore;Actualpaid:Rs1crore\nPlanamount:Rs6crore",
+      "extraction_method": "ocr",
+      "tables": [],
+      "ocr_confidence": 0.984,
+      "ocr_text": "Applicantdirector:ArunShah;DIN:23456789\nJudge:JusticeKavitaRao\nWithdrawnplansubmitter:CancelledHoldingsLimited\nFinancialcreditor:FirstBankLimited\nPlansubmitter:SummitHoldingsLimited\nPreviousowner:PastHoldingLimited\nCurrentowner:CurrentHoldingLimited\nSubsequentowner:LaterHoldingLimited\nPreviousdirector:PriorDirector\nCurrentdirector:CurrentDirector\nSubsequentdirector:LaterDirector\nProposedowner:FutureHoldingLimited\nProposeddirector:FutureDirector\nCreditor:FirstBankLimited;Type:securedfinancial;Claimed:Rs20crore;Admitted:Rs15crore;Planamount:Rs6crore;Actualpaid:Rs1crore\nPlanamount:Rs6crore",
+      "ocr_layout_text": "Applicantdirector:ArunShah;DIN:23456789\nJudge:JusticeKavitaRao\nWithdrawnplansubmitter:CancelledHoldingsLimited\nFinancialcreditor:FirstBankLimited\nPlansubmitter:SummitHoldingsLimited\nPreviousowner:PastHoldingLimited\nCurrentowner:CurrentHoldingLimited\nSubsequentowner:LaterHoldingLimited\nPreviousdirector:PriorDirector\nCurrentdirector:CurrentDirector\nSubsequentdirector:LaterDirector\nProposedowner:FutureHoldingLimited\nProposeddirector:FutureDirector\nCreditor:FirstBankLimited;Type:securedfinancial;Claimed:Rs20crore;Admitted:Rs15crore;Planamount:Rs6crore;Actualpaid:Rs1crore\nPlanamount:Rs6crore"
+    },
+    {
+      "page": 4,
+      "text": "Summaryof thepaymentstobemadeundertheResolutionPlan\nSr.No.\n1.FirstBankLimited15000000060000000\nTotalPlanValue60000000\nTheResolutionPlanisherebyapproved.",
+      "layout_text": "Summaryof thepaymentstobemadeundertheResolutionPlan\nSr.No.\n1.FirstBankLimited15000000060000000\nTotalPlanValue60000000\nTheResolutionPlanisherebyapproved.",
+      "extraction_method": "ocr",
+      "tables": [],
+      "ocr_confidence": 0.984,
+      "ocr_text": "Summaryof thepaymentstobemadeundertheResolutionPlan\nSr.No.\n1.FirstBankLimited15000000060000000\nTotalPlanValue60000000\nTheResolutionPlanisherebyapproved.",
+      "ocr_layout_text": "Summaryof thepaymentstobemadeundertheResolutionPlan\nSr.No.\n1.FirstBankLimited15000000060000000\nTotalPlanValue60000000\nTheResolutionPlanisherebyapproved."
+    }
+  ]
+}

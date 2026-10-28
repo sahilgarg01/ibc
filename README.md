@@ -6,13 +6,23 @@ The **IBBI order catalogue** shows public order listings and imported PDF files 
 
 ## Run locally
 
-Python 3.10+ is required. On this machine, from the project root:
+Python 3.10–3.12 is required (the OCR dependency does not support Python 3.13). On this machine, from the project root:
 
 ```powershell
 & 'C:\Users\Sahil\AppData\Local\Programs\Python\Python312\python.exe' -m venv .venv
 .\.venv\Scripts\python.exe -m pip install -r requirements.txt
 .\.venv\Scripts\python.exe -m uvicorn backend.main:app --reload --host 127.0.0.1 --port 8000
 ```
+
+On Linux, use the same virtual environment for dependency installation and the server:
+
+```bash
+python3.12 -m venv .venv
+.venv/bin/python -m pip install -r requirements.txt
+.venv/bin/python -m uvicorn backend.main:app --reload --host 127.0.0.1 --port 8000
+```
+
+After updating the project, rerun the dependency installation command and restart the server. If PDF imports report `No module named 'pdfplumber'`, install the requirements using the Python interpreter that runs the server, then retry the import.
 
 PostgreSQL 18 is installed locally. The ignored `.env` file holds the connection settings; never commit it. The `ibc` database and tables have been created, and the single selected document `0f637acc6a9843fea2f682df499de5b7` and its case were migrated. For a fresh setup, run `python -m scripts.setup_postgres` after configuring `.env`, then `python -m scripts.migrate_one --document-id <id>` for exactly one chosen SQLite document. `python -m scripts.verify_postgres` checks the migrated case and PDF through the API.
 
@@ -60,7 +70,7 @@ The included [resolution approval order](samples/indo-global-resolution-order.pd
 
 The IBBI download response included a short HTML loader before `%PDF-`. The exact response is retained as `samples/official-response.bin`; the bundled PDF removes those 369 prefix bytes so PDF readers accept it. [Sample metadata](samples/manifest.json) records both SHA-256 hashes and the transformation. [Starter data](samples/starter-record.json) is a manually transcribed **draft**, with page references. The page 9 table supplies four creditor-category totals; the order does not supply all requested party-wise claims, actual payments or verified past owners. The starter record leaves those fields unknown. Its computed haircut refers only to the nominal amounts in the table, subject to the order's plan conditions.
 
-Uploads and automatic imports populate draft case fields from explicit PDF evidence, including recognized financial tables, party/role labels, dates, ownership labels, debtor registered office and industry, successful resolution applicant and CIN, valuation amounts, and plan totals. Opening an older draft refreshes its PDF suggestions when extraction rules have changed; entered values and approved records are preserved. A plan haircut can use either matched admitted/planned creditor rows or a single plan's explicit admitted-claims total and plan amount; the screen names the basis. Each value retains a document/page reference. An order that merely quotes an earlier approval is not itself a final approval. Scanned, unlabeled or unsupported layouts still require OCR/manual review, and a resolution applicant is not assumed to be the post-resolution owner. See [fact extraction](docs/fact-extraction.md).
+Uploads and automatic imports populate draft case fields from explicit PDF evidence, including recognized financial tables, party/role labels, dates, ownership labels, debtor registered office and industry, successful resolution applicant and CIN, valuation amounts, and plan totals. New uploads and imports populate a draft immediately using the current shared extractor. Opening an existing draft does not change its saved values; re-extraction requires the explicit Fill missing fields from PDF action. A plan haircut can use either matched admitted/planned creditor rows or a single plan's explicit admitted-claims total and plan amount; the screen names the basis. Each value retains a document/page reference. An order that merely quotes an earlier approval is not itself a final approval. Scanned, unlabeled or unsupported layouts still require OCR/manual review, and a resolution applicant is not assumed to be the post-resolution owner. See [fact extraction](docs/fact-extraction.md).
 
 See [architecture](docs/architecture.md) for the components, data rules and expansion path.
 

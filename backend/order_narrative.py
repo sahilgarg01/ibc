@@ -76,6 +76,23 @@ def enrich(record, extraction, document_id, put, claim_rows, evidence, money, is
         if creditor:
             _add_fact(record, "financial_creditors", creditor.group(1),
                       document_id, number, evidence, creditor.group(0))
+        sole = re.search(r'\b(?:sole|only)\s+Financial\s+Creditor,?\s*(?:i\.e\.,?|namely,?)\s+([A-Z][A-Za-z &.-]{2,100}?)(?=\.\s|[;\n]|$)', flat, re.I)
+        if sole:
+            _add_fact(record, 'financial_creditors', sole[1], document_id,
+                      number, evidence, sole.group())
+        # These are amounts received, not admitted amounts or plan payments.
+        # A financial creditor's security is not established by its bank name.
+        financial = re.search(r'\breceived\s+one\s+claim\s+by\s+a\s+Financial\s+Creditor\s+amounting\s+to\s+(?:Rs\.?|INR)\s*([\d,]+(?:\.\d+)?)/\s*-', flat, re.I)
+        operational = re.search(r'\b\d+\s+claims\s+by\s+Operational\s+Creditors,?\s+totall?ing\s+(?:Rs\.?|INR)\s*([\d,]+(?:\.\d+)?)/\s*-', flat, re.I)
+        for match, name, kind, scope in (
+                (financial, sole[1] if sole else 'Financial Creditors', 'other', 'individual' if sole else 'category_total'),
+                (operational, 'Operational Creditors', 'operational', 'category_total')):
+            if match and (amount := money(match[1])) is not None:
+                claim_rows.append({'creditor': name, 'category': kind, 'scope': scope,
+                    'claimed': amount, 'admitted': None, 'plan_amount': None,
+                    'document_id': document_id, 'page': number,
+                    'notes': 'Claim received as stated in narrative; admission and payment are not stated.'})
+                evidence.append({'field': 'claims', 'page': number, 'excerpt': match.group()})
         bidders = re.search(
             r"\bResolution Plans received from\s+(.{10,260}?)\.\s+The CoC\b",
             flat, re.I,
@@ -84,6 +101,13 @@ def enrich(record, extraction, document_id, put, claim_rows, evidence, money, is
             for name in re.split(r"\s*,\s*|\s+and\s+", bidders.group(1)):
                 _add_fact(record, "plan_submitters", name, document_id,
                           number, evidence, bidders.group(0))
+        if record["applicant"] and not record["plans"]:
+            total = re.search(r"\btotal Resolution Plan value is\s+(?:Rs\.?|INR)\s*([\d,]+(?:\.\d+)?)", flat, re.I)
+            if total:
+                record["plans"].append({"applicant": record["applicant"]["value"],
+                    "amount": money(total.group(1)), "admitted": None,
+                    "document_id": document_id, "page": number})
+                evidence.append({"field": "plans", "page": number, "excerpt": total.group(0)})
         if record["applicant"] and not record["plans"]:
             planned = re.search(
                 r"\bResolution Plan provides for payment of\s+Rs\.?\s*"
@@ -141,7 +165,7 @@ def enrich_extended(record, extraction, document_id, put, claim_rows, evidence, 
         n, text = page["page"], page["text"]
         flat = " ".join(text.split())
         if n <= 2:
-            for m in re.finditer(r"\bSHRI\s+([A-Z][A-Z ]{4,60}?)\s*,?\s*MEMBER\s*\((JUDICIAL|TECHNICAL)\)", flat, re.I):
+            for m in re.finditer(r"\bSHRI\.?\s+([A-Z][A-Z ]{4,60}?)\s*,?\s*MEMBER\s*\((JUDICIAL|TECHNICAL)\s*\)", flat, re.I):
                 name("judges", f"{m.group(1).title().strip()} - Member ({m.group(2).title()})", n, m.group(0))
             if not record["professional"]:
                 m = re.search(r"\b(?:Mr|Ms|Mrs)\.?\s+([A-Z][A-Za-z .]{4,70}?)\s*(?:\[[^\]]{0,130}\]\s*)?Resolution\s+Professional\s+of\b", flat, re.I)

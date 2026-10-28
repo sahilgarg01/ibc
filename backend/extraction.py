@@ -5,7 +5,7 @@ from io import BytesIO
 from pypdf import PdfReader
 from .ocr import read_scanned_pages
 
-READER_VERSION = 'shared-tables-3'
+READER_VERSION = 'page-isolated-ocr-4'
 
 
 def needs_pdf_reread(extraction):
@@ -153,10 +153,15 @@ def extract_pdf(content: bytes) -> dict:
         if scanned:
             try:
                 recognized=read_scanned_pages(content,scanned)
+                failed=[]
                 for p in pages:
-                    if p['page'] in recognized:
-                        result=recognized[p['page']]
+                    if p['page'] in scanned:
                         p['ocr_attempted']=True
+                        result=recognized.get(p['page'])
+                        if not result or result.get('error'):
+                            p['ocr_error']='OCR could not process this page.'
+                            failed.append(p['page'])
+                            continue
                         p['ocr_confidence']=result['confidence']
                         p['ocr_text'] = result['text']
                         p['ocr_layout_text'] = result.get('layout_text', result['text'])
@@ -164,7 +169,9 @@ def extract_pdf(content: bytes) -> dict:
                             p['embedded_text'] = p['text']
                             p['embedded_layout_text'] = p['layout_text']
                             p['text']=result['text'];p['layout_text']=result.get('layout_text', result['text']);p['extraction_method']='ocr'
-                if any(p.get('extraction_method')=='ocr' for p in pages):
+                if failed:
+                    warnings.append('OCR could not process scanned pages: '+', '.join(map(str,failed))+'. Other pages were retained; review these source pages.')
+                if any(p.get('ocr_text', '').strip() for p in pages):
                     warnings.append('Text on scanned pages was recognized with OCR. Verify names, dates and amounts against the PDF.')
             except Exception:
                 for p in pages:

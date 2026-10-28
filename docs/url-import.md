@@ -1,6 +1,6 @@
 # Public URL imports and research data
 
-Start the app with `.venv\Scripts\python.exe -m uvicorn backend.main:app --reload --host 127.0.0.1 --port 8000` and open http://127.0.0.1:8000.
+Start the app with `.venv312\Scripts\python.exe -m uvicorn backend.main:app --reload --host 127.0.0.1 --port 9010` and open http://127.0.0.1:9010.
 
 Click **Import from URL**, paste a public listing URL or direct PDF URL, choose page/file limits, and click **Start import**. Progress includes imported files, duplicates, failed files, and individual errors. Open a resulting draft with its Review button. The latest import is available when reopening the dialog; recent history is also available at `GET /api/imports`.
 

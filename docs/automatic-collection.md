@@ -11,7 +11,7 @@ The scheduler setting and progress are stored in PostgreSQL. A renewable databas
 The scheduler is disabled initially. Enable it from the screen when ready to start the full historical collection. Live checks verify the first-page parsers; these checks do not themselves download the historical archive.
 
 ```powershell
-.venv\Scripts\python.exe -m uvicorn backend.main:app --host 127.0.0.1 --port 8000
+.venv312\Scripts\python.exe -m uvicorn backend.main:app --host 127.0.0.1 --port 9010
 ```
 
 No Windows service or Windows Task Scheduler task is installed by this change. For collection while the IDE is closed, keep the application running as a service or on a server.

@@ -78,9 +78,10 @@ def enrich_sections(record, extraction, document_id, put, evidence, money, iso_d
                 add(field, iso_date(value), n, excerpt)
             elif field in {'company', 'applicant', 'professional', 'liquidator', 'irp'}:
                 add(field, clean_entity(value), n, excerpt)
-            elif field == 'cin':
+            elif field in {'cin', 'applicant_cin'}:
                 cin = re.sub(r'\s+', '', value).upper()
-                if n <= 3 and 'corporate debtor' in flat.lower() and re.fullmatch(r'[LU]\d{5}[A-Z]{2}\d{4}[A-Z]{3}\d{6}', cin):
+                scoped = field == 'applicant_cin' or re.search(r'\bdebtor\b', excerpt, re.I) or (n <= 3 and 'corporate debtor' in flat.lower())
+                if scoped and re.fullmatch(r'[LU]\d{5}[A-Z]{2}\d{4}[A-Z]{3}\d{6}', cin):
                     add(field, cin, n, excerpt)
             elif field not in {'applicant_cin'}:
                 add(field, value[:500], n, excerpt)
@@ -103,7 +104,7 @@ def enrich_sections(record, extraction, document_id, put, evidence, money, iso_d
             if m:
                 add('professional', clean_entity(m.group(1)), n, m.group(0))
             m = re.search(r'submitted\s+by\s+(?:Mr\.?\s+|M/s\.?\s*)?(.{3,130}?)\s*\((?:hereinafter referred to as the\s+)?["\s]*(?:Successful\s+Resolution\s+Applicant|Respondent/SRA|SRA)', flat, re.I)
-            if m:
+            if m and not re.fullmatch(r'(?:the\s+)?(?:Successful\s+)?Resolution\s+Applicant', m.group(1).strip(), re.I):
                 applicant_name = clean_entity(m.group(1)).split('"')[0].rstrip(' ,')
                 add('applicant', applicant_name, n, m.group(0))
                 add('plan_submitters', applicant_name, n, m.group(0))
@@ -155,7 +156,7 @@ def enrich_sections(record, extraction, document_id, put, evidence, money, iso_d
 
     # Form H and annexures are label/value tables, independent of their line wrapping.
     aliases = {field: '(?:' + '|'.join(patterns) + ')' for field, patterns in FIELD_ALIASES.items()
-               if field not in {'fair_value', 'liquidation_value', 'total_received_claims', 'total_admitted_claims'}}
+               if field not in {'cin', 'applicant_cin', 'fair_value', 'liquidation_value', 'total_received_claims', 'total_admitted_claims'}}
     valuation = {}
     plan_value = None
     admitted_total = None
@@ -255,7 +256,7 @@ def enrich_asset_tables(record, extraction, document_id, evidence, money):
             for row in table:
                 cells = [compact(cell) for cell in row]
                 keys = [re.sub(r'[^a-z]', '', cell.lower()) for cell in cells]
-                fair = next((i for i, key in enumerate(keys) if key == 'fairvalue'), None)
+                fair = next((i for i, key in enumerate(keys) if key in {'fairvalue', 'fairmarketvalue'}), None)
                 liquidation = next((i for i, key in enumerate(keys) if key == 'liquidationvalue'), None)
                 if fair is not None and liquidation is not None:
                     ai = next((i for i, key in enumerate(keys) if key in {'asset', 'assetclass', 'assetdescription', 'propertydescription', 'item', 'particulars', 'description'}), 0)
@@ -270,7 +271,12 @@ def enrich_asset_tables(record, extraction, document_id, evidence, money):
                 if columns is None or len(cells) <= max(i for i in columns if i is not None):
                     continue
                 ai, vi, fi, li = columns
-                if cells[ai] and not cells[ai].isdigit() and cells[ai].casefold() != 'average':
+                valuer_row = re.match(r'^Valuer\s*\d+\b', cells[ai], re.I)
+                if valuer_row:
+                    # A valuer name is the valuation basis, not an asset class.
+                    context = re.search(r'valued\s+the\s+(.{3,100}?),\s*and\s+their\s+reports', text, re.I)
+                    asset = context.group(1) if context else 'Corporate debtor (total)'
+                elif cells[ai] and not cells[ai].isdigit() and cells[ai].casefold() != 'average':
                     asset = cells[ai]
                 fv, lv = table_money(cells[fi], money, unit), table_money(cells[li], money, unit)
                 if not asset or (fv is None and lv is None):
@@ -289,7 +295,7 @@ def enrich_asset_tables(record, extraction, document_id, evidence, money):
                                 record[field] = {'value': amount, 'document_id': document_id, 'page': page['page']}
                                 evidence.append({'field': field, 'page': page['page'], 'excerpt': ' | '.join(cells)[:1000]})
                     continue
-                basis = cells[vi] if vi is not None and cells[vi] else 'Reported'
+                basis = cells[ai] if valuer_row else cells[vi] if vi is not None and cells[vi] else 'Reported'
                 if re.search(r'\baverage\b', ' '.join(cells[:min(fi, li)]), re.I) or average_fair is not None or average_liquidation is not None:
                     basis = 'Average'
                 rows.append({'asset': asset[:150], 'basis': basis[:100], 'fair_value': fv, 'liquidation_value': lv,
@@ -355,10 +361,11 @@ def enrich_claim_tables(record, extraction, document_id, claim_rows, evidence, m
                     roles.setdefault(role, i)
             claimed, admitted, payment = (roles.get(key) for key in ('claimed', 'admitted', 'plan_amount'))
             if roles:
-                coc_table = any(re.search(r'name of (?:the )?members|name of creditor', cell, re.I) for cell in header) and any('voting' in cell for cell in header)
+                name_header = r'name of (?:the )?(?:members|(?:financial\s+)?creditors?)'
+                coc_table = any(re.search(name_header, cell, re.I) for cell in header) and any('voting' in cell for cell in header)
                 pending_roles.update(roles)
                 for i, cell in enumerate(header):
-                    if re.search(r'stakeholder|category of claims|name of creditor|name of (?:the )?members', cell, re.I):
+                    if re.search(r'stakeholder|category of claims|' + name_header, cell, re.I):
                         name_column = i
                 claimed, admitted, payment = (pending_roles.get(key) for key in ('claimed', 'admitted', 'plan_amount'))
             if admitted is not None and (claimed is not None or payment is not None):

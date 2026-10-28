@@ -8,6 +8,42 @@ from fastapi.testclient import TestClient
 import json
 
 
+def test_label_variants_and_image_only_fields_keep_page_evidence():
+    record, report = extract_case({'pages': [{
+        'page': 1,
+        'text': 'Name of the corporate debtor — Future Industries Limited\n'
+                'Case number  CP 42/2026\n'
+                'Total claims received: Rs 2 crore\n'
+                'Applicant business: Textile manufacturing\n',
+        'ocr_text': 'Resolution professional: Meera Shah\nFair value: Rs 30 lakh',
+    }]}, 'future-pdf')
+    assert record['company']['value'] == 'Future Industries Limited'
+    assert record['case_number']['value'] == 'CP 42/2026'
+    assert record['total_received_claims']['value'] == '20000000.00'
+    assert record['applicant_business']['value'] == 'Textile manufacturing'
+    assert record['professional'] == {'value': 'Meera Shah', 'document_id': 'future-pdf',
+                                     'page': 1, 'din': None, 'cin': None}
+    assert record['fair_value']['value'] == '3000000.00'
+    assert report['field_status']['cin'] == 'not_found'
+
+
+def test_import_merges_distinct_creditors_without_mixing_category_totals():
+    def draft(name, scope='individual'):
+        record = CaseRecord().model_dump(mode='json')
+        record['claims'] = [{'creditor': name, 'category': 'secured_financial',
+                             'scope': scope, 'claimed': '100.00',
+                             'document_id': name, 'page': 1}]
+        return CaseRecord.model_validate(record).model_dump(mode='json')
+    current = draft('Bank A')
+    incoming = draft('Bank B')
+    merged = fill_missing(current, incoming)
+    assert [row['creditor'] for row in merged['claims']] == ['Bank A', 'Bank B']
+    assert fill_missing(merged, incoming) == merged
+    assert fill_missing(current, draft('All secured creditors', 'category_total')) == current
+    total = draft('All secured creditors', 'category_total')
+    assert fill_missing(total, incoming) == total
+
+
 def test_labeled_facts_claims_ownership_and_plan():
     text='''IN THE NATIONAL COMPANY LAW TRIBUNAL, MUMBAI
 Corporate debtor: Example Private Limited
@@ -194,7 +230,7 @@ def test_backfill_preserves_entered_values_and_is_idempotent(tmp_path):
         assert client.get('/api/cases/'+case_id).json()['version']==version
 
 
-def test_opening_older_draft_refills_available_fields(tmp_path):
+def test_older_draft_requires_explicit_reextract_to_refill_fields(tmp_path):
     pdf=(ROOT/'samples/indo-global-resolution-order.pdf').read_bytes()
     with TestClient(create_app(tmp_path)) as client:
         imported=client.post('/api/documents',files={'file':('order.pdf',pdf,'application/pdf')}).json()
@@ -208,6 +244,11 @@ def test_opening_older_draft_refills_available_fields(tmp_path):
             extraction=json.loads(row['extraction'])
             extraction['case_facts']['version']='rules-4'
             db.execute('UPDATE documents SET extraction=? WHERE id=?',(json.dumps(extraction),doc_id))
+        detail=client.get('/api/cases/'+case_id).json()
+        assert detail['record']['applicant_cin'] is None
+        assert detail['version']==1
+        retry=client.post('/api/documents/'+doc_id+'/extract-facts')
+        assert retry.status_code==200, retry.text
         detail=client.get('/api/cases/'+case_id).json()
         assert detail['record']['applicant_cin']['value']=='U45202PN2020PTC189375'
         assert detail['version']==2
