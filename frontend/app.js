@@ -61,6 +61,15 @@ function fieldReview(key, docs) {
   const reviews=docs.map(doc=>doc.extraction?.case_facts?.field_review?.[key]).filter(Boolean);
   return reviews.find(review=>review.status==='not_applicable') || reviews[0];
 }
+function extractedSchedules(docs) {
+  const sourceButton=(doc,page)=>page?`<button type="button" class="text-button field-source" data-doc="${esc(doc.id)}" data-page="${esc(page)}">Page ${esc(page)}</button>`:'';
+  const schedule=(rows,doc)=>`<div class="table-wrap"><table><thead><tr><th>Name / category</th><th>Claimed</th><th>Admitted</th><th>Proposed</th><th>Source</th></tr></thead><tbody>${rows.map(row=>`<tr><td>${esc(row.creditor||row.recipient||row.value||'Unspecified')}</td><td>${esc(fmt(row.claimed))}</td><td>${esc(fmt(row.admitted))}</td><td>${esc(fmt(row.plan_amount??row.amount))}</td><td>${sourceButton(doc,row.page)}</td></tr>`).join('')}</tbody></table></div>`;
+  return docs.map(doc=>{
+    const report=doc.extraction?.case_facts||{},alternatives=report.alternatives||[],members=report.coc_members||[],totals=report.financial_table_totals||[];
+    if(!alternatives.length&&!members.length)return '';
+    return `<details class="extraction-coverage"><summary>${esc(doc.filename)}: voting and alternative source figures</summary><p>These source rows are available for review. Earlier schedules and parent/subcategory rows are not added to the draft totals again. Amounts are INR; proposed amounts do not establish actual payment.</p>${totals.length?`<h3>Printed stakeholder totals</h3>${schedule(totals.map(total=>({...total,creditor:total.label})),doc)}`:''}${members.length?`<h3>CoC voting rights</h3><table><thead><tr><th>Creditor</th><th>Voting share</th><th>Vote</th><th>Source</th></tr></thead><tbody>${members.map(member=>`<tr><td>${esc(member.name)}</td><td>${esc(member.percent)}%</td><td>${esc(member.status||'Not stated')}</td><td>${sourceButton(doc,member.page)}</td></tr>`).join('')}</tbody></table>`:''}${alternatives.map(item=>`<h3>${esc(item.field.replaceAll('_',' '))}</h3><p>${esc(item.reason)}</p>${item.previous&&!Array.isArray(item.previous)?`<p>Earlier value: ${esc(item.previous.value)} ${sourceButton(doc,item.previous.page)}; selected value: ${esc(item.selected)} ${sourceButton(doc,item.page)}</p>`:''}${Array.isArray(item.previous)&&item.previous.length?`<p>Earlier schedule</p>${schedule(item.previous,doc)}`:''}${item.source_rows?.length?`<p>Stakeholder source rows, before combining disjoint subcategories</p>${schedule(item.source_rows,doc)}`:''}`).join('')}</details>`;
+  }).join('');
+}
 function emptyFieldStatus(key, docs) {
   const review=fieldReview(key,docs);
   if(!review) return '';
@@ -199,6 +208,7 @@ function renderDetail() { hideImportScreen();
   const missing=[...new Set(docs.flatMap(doc=>doc.extraction?.case_facts?.missing_fields||[]))].filter(field=>!r[field]||(Array.isArray(r[field])&&!r[field].length)||r[field]==='unknown');
   if(missing.length && !docs.some(doc=>doc.extraction?.case_facts?.field_review)) $('.warning',$('#detail')).insertAdjacentHTML('afterend',`<details class="extraction-coverage"><summary>${missing.length} fields need source evidence or manual review</summary><p>These fields were not found by the extractor. They may be absent from the order or use an unsupported format; check the PDF before entering a value.</p><p>${missing.map(field=>esc(field.replaceAll('_',' '))).join(' · ')}</p></details>`);
   const reviewedFields=[...new Set(docs.flatMap(doc=>Object.keys(doc.extraction?.case_facts?.field_review||{})))];
+  $('.warning',$('#detail')).insertAdjacentHTML('afterend',extractedSchedules(docs));
   if(reviewedFields.length){
     $('.warning',$('#detail')).insertAdjacentHTML('afterend',`<details class="extraction-coverage" open><summary>PDF check for all ${reviewedFields.length} draft fields</summary><p>Each field is filled from evidence, marked Not documented, or marked Not applicable with an explanation. Status explanations are not saved as names, dates or amounts.</p><table><thead><tr><th>Draft field</th><th>Result</th><th>Evidence / explanation</th></tr></thead><tbody>${reviewedFields.map(key=>{
       const value=r[key],filled=Boolean(value)&&value!=='unknown'&&(!Array.isArray(value)||value.length>0),review=fieldReview(key,docs);

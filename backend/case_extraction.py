@@ -2,7 +2,7 @@
 import re
 from datetime import datetime
 from decimal import Decimal, InvalidOperation
-from .models import AssetValue, CaseRecord, Claim, Plan, preferred_asset_values
+from .models import AssetValue, CaseRecord, Claim, Plan, preferred_asset_values, metrics
 from .final_orders import final_decision
 from .order_narrative import enrich, enrich_extended
 from .section_facts import enrich_sections, enrich_claim_tables, enrich_asset_tables
@@ -11,8 +11,9 @@ from .caption_facts import enrich_captions
 from .ocr_financial_rows import enrich_ocr_rows, enrich_verified_ocr_claims, enrich_ocr_coc, enrich_ocr_claim_summary
 from .plan_details import enrich_rejected_claims, enrich_plan_allocations, enrich_merged_operational_table
 from .field_rules import field_review
+from .evidence_rules import enrich_evidence_rules, reconciliation_warnings
 
-VERSION = 'ocr-label-spacing-27'
+VERSION = 'vertical-caption-claims-29'
 AMOUNT = r'(?:Rs\.?|INR|₹)?\s*([\d,]+(?:\.\d+)?)\s*(crores?|cr\.?|lakhs?|lacs?|millions?)?'
 CIN = r'[LU]\d{5}[A-Z]{2}\d{4}[A-Z]{3}\d{6}'
 
@@ -238,6 +239,8 @@ def extract_case(extraction, document_id):
             name=re.split(r'\s*[,;(]\s*(?:DIN|CIN)\b',raw,flags=re.I)[0].strip(' .,:;\t')
             if not name or len(name)>120 or re.search(r'\b(?:application|tribunal|regional director|resolution professional)\b',name,re.I):
                 return
+            if field == 'financial_creditors' and re.fullmatch(r'(?:S(?:r)?|No)\.?', name, re.I):
+                return  # A wrapped "S. No." table header is not a creditor.
             fact={'value':name[:500],'document_id':document_id,'page':number}
             if din: fact['din']=din.group(1)
             if cin: fact['cin']=cin.group().upper()
@@ -384,7 +387,12 @@ def extract_case(extraction, document_id):
             warnings.append('A financial row could not be validated; review its source page.')
             continue
         key=(row['category'],row['creditor'].casefold())
-        if key in seen: continue
+        if key in seen:
+            existing = next(r for r in record['claims'] if (r['category'],r['creditor'].casefold()) == key)
+            amounts = ('claimed','admitted','plan_amount','actual_paid')
+            if all(existing[field] is None for field in amounts) and any(row[field] is not None for field in amounts):
+                existing.update(row)  # Prefer a quantified schedule over an earlier unquantified mention.
+            continue
         same=[r for r in record['claims'] if r['category']==row['category']]
         if same and (row['scope']=='category_total' or any(r['scope']=='category_total' for r in same)):
             warnings.append('Conflicting category totals and individual claims need review; no automatic combination was made.')
@@ -404,6 +412,7 @@ def extract_case(extraction, document_id):
                            if item['field'] == 'claims' and item['page'] == row['page']
                            and row['creditor'] in item['excerpt']), row['notes'])
             evidence.append({'field': 'plan_payments', 'page': row['page'], 'excerpt': source})
+    review_details = enrich_evidence_rules(record, extraction, document_id, evidence, money, iso_date, warnings)
     if record['outcome']=='resolution_approved' and record['order_date'] and not record['resolution_date']:
         record['resolution_date']=record['order_date'].copy()
     if record['admission_date'] and record['resolution_date'] and record['admission_date']['value']>record['resolution_date']['value']:
@@ -411,9 +420,11 @@ def extract_case(extraction, document_id):
         warnings.append('Extracted dates conflict; resolution date requires review.')
     record['notes']='Automatically populated from explicit PDF evidence. Verify fields and page references before approval.'
     record = CaseRecord.model_validate(record).model_dump(mode='json')
+    warnings.extend(reconciliation_warnings(record, metrics(CaseRecord.model_validate(record))))
     fields = [field for field in CaseRecord.model_fields if field != 'notes']
     populated = [field for field in fields if record[field] and record[field] != 'unknown']
-    return record, {'version':VERSION,'evidence':evidence,'warnings':warnings,
+    return record, {'version':VERSION,'evidence':evidence,'warnings':list(dict.fromkeys(warnings)),
+                    **review_details,
                     'field_review':field_review(record, extraction, document_id, evidence),
                     'populated_fields':populated,
                     'field_status':{field: 'extracted' if field in populated else 'not_found' for field in fields},

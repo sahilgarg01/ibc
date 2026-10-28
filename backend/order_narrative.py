@@ -80,6 +80,19 @@ def enrich(record, extraction, document_id, put, claim_rows, evidence, money, is
         if sole:
             _add_fact(record, 'financial_creditors', sole[1], document_id,
                       number, evidence, sole.group())
+        received = re.search(r'claims\s+were\s+received\s+from\s+(.{3,300}?),\s*which\s+were\s+verified.{0,180}?admitted\s+on\s+a\s+provisional\s+basis', flat, re.I)
+        if received:
+            opening = ' '.join(' '.join(p['text'].split()) for p in extraction['pages'][:3])
+            for creditor in re.split(r'\s+and\s+', received[1]):
+                stem = re.split(r'\b(?:Private|Pvt|Limited|Ltd)\b', creditor, maxsplit=1, flags=re.I)[0].strip()
+                kind = ('government' if re.search(r'State\s+Insurance\s+Corporation|Provident\s+Fund', creditor, re.I)
+                        else 'operational' if re.search(re.escape(stem) + r'.{0,45}?OPERATIONAL\s+CREDITOR', opening, re.I)
+                        else 'other')
+                claim_rows.append({'creditor':creditor.strip(), 'category':kind, 'scope':'individual',
+                    'claimed':None, 'admitted':None, 'plan_amount':None, 'actual_paid':None,
+                    'document_id':document_id, 'page':number,
+                    'notes':'Claim received and provisionally admitted; no amount is quantified in this paragraph.'})
+            evidence.append({'field':'claims','page':number,'excerpt':received.group()[:1000]})
         # These are amounts received, not admitted amounts or plan payments.
         # A financial creditor's security is not established by its bank name.
         financial = re.search(r'\breceived\s+one\s+claim\s+by\s+a\s+Financial\s+Creditor\s+amounting\s+to\s+(?:Rs\.?|INR)\s*([\d,]+(?:\.\d+)?)/\s*-', flat, re.I)

@@ -36,7 +36,7 @@ def enrich_captions(extraction, put, money, iso_date):
             capture('tribunal', r'NATIONAL\s+COMPANY\s+LAW\s+TRIBUNAL\s+((?!DIVISION\b)[A-Z]+\s+BENCH)\b', lambda v: 'NCLT ' + v.split()[0].title())
             capture('case_number', r'\b(C\.?\s*P\.?\s*\(\s*IB\s*\)\s*/\s*\d+(?:/\d+)?/[A-Z]+/\d{4})\b')
             role_caption = re.search(r'\b(?:Versus|V/s\.?|Vs\.?)\s+(?P<name>(?:M/s\.?\s*)?[A-Z][A-Za-z0-9 &.,()\-\n]{2,150}?(?:Private\s+Limited|Pvt\.?\s*Ltd\.?|Limited|Ltd\.?))(?P<details>.{0,600}?)[.…\s]*(?:Respondent\s*/\s*)?Corporate\s+Debtor\b', text, re.I | re.S)
-            if role_caption:
+            if role_caption and not re.search(r'Successful\s+Resolution\s+Applicant|Financial\s+Creditor|\bV/s\.?|\bVersus\b', role_caption['details'], re.I):
                 put('company', clean_entity(role_caption['name']), n, role_caption.group())
                 address = re.search(r'Having\s+its\s+registered\s+(?:address|office)\s+at\s*:\s*(.+?)(?=[.…]*\s*(?:Respondent|Corporate Debtor)|$)', role_caption['details'], re.I | re.S)
                 if address:
@@ -51,7 +51,8 @@ def enrich_captions(extraction, put, money, iso_date):
                 address = re.search(r'having\s+its\s+registered\s+office\s+at\s+(.+?)(?:;|$)', debtor['details'], re.I | re.S)
                 if address:
                     put('registered_office', address.group(1).strip(' .'), n, debtor.group())
-            capture('professional', r'^\s*([A-Z][A-Za-z.-]+(?:\s+[A-Z][A-Za-z.-]+){1,4}),\s*(?:the\s+)?Resolution\s+Professional\s+of\b', source=text)
+            capture('professional', person + r'\s*,?\s*Resolution\s+Professional\s+(?:of|for)\b')
+            capture('professional', r'^\s*((?-i:[A-Z][A-Za-z.-]+(?:\s+[A-Z][A-Za-z.-]+){1,4})),\s*(?:the\s+)?Resolution\s+Professional\s+of\b', source=text)
             capture('tribunal', r'NATIONAL\s+COMPANY\s+LAW\s+TRIBUNAL\s+(COURT\s*[-–—]\s*[IVX]+\s*,\s*[A-Z]+\s+BENCH|[A-Z]+\s+BENCH\s*,\s*[IVX]+)', lambda v: 'NCLT ' + v)
             capture('professional', person + r'\s*(?:,\s*[“"(]*Applicant[”")]*\s*)?\s*(?:[“"(]*Applicant[”")]*\s*)?Resolution Professional\s+(?:of|for)\b')
             capture('case_number', r'\b(CP\s*\(\s*IB\s*C?\s*\)\s*/\s*\d+\s*\([A-Z]+\)\s*/\s*\d{4})')
@@ -61,7 +62,9 @@ def enrich_captions(extraction, put, money, iso_date):
         capture('applicant', r'Successful Resolution Applicant\s*(?:\(SRA\)\s*)?(?:viz\.?\s*,?\s*|is\s+)' + company)
         capture('applicant', person + r'\s*\(["“\s]*(?:Successful\s+)?Resolution\s+Applicant["”\s]+or\s+["“\s]*RA["”\s]*\)')
         capture('registered_office', r'The Corporate Debtor is\b.{0,200}?having its registered office at\s+(.{5,400}?)(?=\.\s+The Corporate Debtor|$)')
-        capture('registered_office', r'Resolution\s+Professional\s+of\s+(?:M/s\.?\s*)?' + company[1:-1] + r'\s+Having\s+its\s+registered\s+(?:address|office)\s+at\s*:\s*(.{5,350}?\b\d{3}\s*\d{3}\b)')
+        # An address following the RP's caption belongs to the applicant block.
+        # Only a debtor-scoped caption or an explicit debtor label establishes
+        # the corporate debtor's registered office (handled above).
         capture('industry', r'The Corporate Debtor was involved in\s+([^.;]{5,150})')
         capture('industry', r'The Corporate Debtor (?:is|was)\s+(?:primarily\s+)?engaged in\s+(?:the\s+)?(?:business\s+of\s+)?(.{5,180}?)(?:\.\s|$)', lambda v: v.rstrip('.'))
         capture('coc_voting_share', r'sole\s+Financial\s+Creditor\s+holding\s+(\d{1,3}(?:\.\d+)?\s*%)\s+of\s+the\s+voting\s+share', lambda v: v.replace(' ', ''))
@@ -84,6 +87,7 @@ def enrich_captions(extraction, put, money, iso_date):
         capture('liquidator', person + r',?\s+having\s+IBBI\s+Registration\s+No\..{0,120}?is\s+hereby\s+appointed\s+as\s+the\s+Liquidator\b')
         capture('liquidator', r'Accordingly,\s+' + person + r'\s+bearing\s+Registration\s+No\..{0,550}?to\s+act\s+as\s+the\s+Liquidator\b')
         capture('liquidator', r'we\s+hereby\s+appoint\s+' + person + r'\s+bearing\s+Registration\s+No\..{0,1000}?to\s+act\s+as\s+the\s+Liquidator\b')
+        capture('liquidator', r'we\s+hereby\s+appoint\s+((?-i:[A-Z][A-Za-z.-]*(?:\s+[A-Z][A-Za-z.-]*){1,5}))\s*,\s*having\s+Registration\s+No\..{0,400}?\bas\s+the\s+Liquidator\b')
         debtor_cin = re.search(r'Corporate\s+Debtor,\s*' + company[1:-1] + r'\s*,\s*CIN\s*:?\s*([LU](?:\s*[A-Z0-9]){20})\s*,', flat, re.I)
         if debtor_cin:
             cin = re.sub(r'\s+', '', debtor_cin.group(1)).upper()

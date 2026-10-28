@@ -209,6 +209,8 @@ def metrics(record: CaseRecord) -> dict:
     admitted_total = stated_total(record.total_admitted_claims)
     payment_sum = sum((item.amount for item in record.plan_payments), Decimal(0))
     plan_total = record.plans[0].amount if len(record.plans) == 1 else None
+    def difference(breakdown, total):
+        return str(breakdown - total) if breakdown is not None and total is not None else None
     return {"matched_admitted_inr": str(admitted), "matched_plan_inr": str(planned),
             "plan_haircut_percent": str(haircut) if haircut is not None else None,
             "matched_rows": len(eligible), "total_rows": len(record.claims), "basis": basis,
@@ -216,10 +218,16 @@ def metrics(record: CaseRecord) -> dict:
             "claim_admitted_breakdown_inr": str(admitted_breakdown) if admitted_breakdown is not None else None,
             "claim_received_matches_total": received_breakdown == received_total if received_breakdown is not None and received_total is not None else None,
             "claim_admitted_matches_total": admitted_breakdown == admitted_total if admitted_breakdown is not None and admitted_total is not None else None,
+            "claim_received_difference_inr": difference(received_breakdown, received_total),
+            "claim_admitted_difference_inr": difference(admitted_breakdown, admitted_total),
             "asset_valuations": [item.model_dump(mode="json") for item in asset_values],
             "asset_fair_breakdown_inr": str(fair_breakdown) if fair_breakdown is not None else None,
             "asset_liquidation_breakdown_inr": str(liquidation_breakdown) if liquidation_breakdown is not None else None,
             "asset_fair_matches_total": fair_breakdown == fair_total if fair_breakdown is not None and fair_total is not None else None,
             "asset_liquidation_matches_total": liquidation_breakdown == liquidation_total if liquidation_breakdown is not None and liquidation_total is not None else None,
+            "asset_fair_difference_inr": difference(fair_breakdown, fair_total),
+            "asset_liquidation_difference_inr": difference(liquidation_breakdown, liquidation_total),
+            "plan_total_inr": str(plan_total) if plan_total is not None else None,
             "plan_payments_sum_inr": str(payment_sum) if record.plan_payments else None,
+            "plan_payments_difference_inr": difference(payment_sum, plan_total) if record.plan_payments else None,
             "plan_payments_match_total": payment_sum == plan_total if record.plan_payments and plan_total is not None else None}

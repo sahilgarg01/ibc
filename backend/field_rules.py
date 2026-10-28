@@ -75,9 +75,9 @@ def column_role(value):
     key = re.sub(r'[^a-z]', '', value.lower())
     # Currency annotations can occur between the amount and its role.
     key = key.replace('inr', '')
-    if key == 'claimed' or any(alias in key for alias in ('amountclaimed', 'claimsreceived', 'claimfiled', 'claimedamount')):
+    if key == 'claimed' or any(alias in key for alias in ('amountclaimed', 'claimsreceived', 'claimreceived', 'claimfiled', 'claimedamount')):
         return 'claimed'
-    if key == 'admitted' or any(alias in key for alias in ('amountadmitted', 'claimsadmitted', 'admittedamount')):
+    if key == 'admitted' or any(alias in key for alias in ('amountadmitted', 'claimsadmitted', 'claimadmitted', 'admittedamount')):
         return 'admitted'
     if ('plan' in key and any(alias in key for alias in ('realizableamount', 'realisableamount', 'proposedpayment', 'amountunder', 'planamount'))) or key in {'proposedpayment', 'proposedamount', 'paymentunderplan', 'realizableamount', 'realisableamount', 'undertheplan'} or key.startswith('proposedpayment'):
         if 'percentage' not in key and 'claimed' not in key and 'admitted' not in key:
@@ -137,6 +137,10 @@ def field_review(record, extraction, document_id, evidence):
             continue
         populated = bool(value) and value != 'unknown'
         sources = [item for item in evidence if item['field'] == field]
+        if isinstance(value, dict) and value.get('page'):
+            # A later scoped/table fact may supersede an earlier narrative
+            # suggestion. The field check should open the selected fact's page.
+            sources.sort(key=lambda item: item['page'] != value['page'])
         review[field] = {
             'status': 'extracted' if populated else 'not_found',
             'reason': 'Filled from PDF evidence.' if populated else
@@ -149,7 +153,7 @@ def field_review(record, extraction, document_id, evidence):
     if record['outcome'] == 'liquidation_ordered':
         for page in extraction['pages']:
             text = ' '.join(page['text'].split())
-            no_plan = re.search(r'\b(?:[Nn]o\s+resolution\s+plan\s+was\s+received|[Ii]n\s+the\s+absence\s+of\s+any\s+resolution\s+plan\s+for\s+the\s+Corporate\s+Debtor)\b', text)
+            no_plan = re.search(r'\b(?:no\s+resolution\s+plan\s+was\s+received|in\s+the\s+absence\s+of\s+any\s+resolution\s+plan\s+for\s+the\s+Corporate\s+Debtor)\b', text, re.I)
             if no_plan:
                 for field in ('resolution_date', 'applicant', 'applicant_cin',
                               'applicant_incorporated', 'applicant_business',
@@ -167,4 +171,10 @@ def field_review(record, extraction, document_id, evidence):
                         review[field]['reason'] = 'The order says appointment of valuers was not approved; no supported valuation amount was found.'
                         review[field]['sources'] = [{'document_id': document_id,
                             'page': page['page'], 'excerpt': valuation.group()}]
+            not_started = re.search(r'process\s+of\s+valuation\s+of\s+the\s+assets.{0,100}?could\s+not\s+be\s+commenced', text, re.I)
+            if not_started:
+                for field in ('fair_value','liquidation_value','asset_values'):
+                    if review[field]['status'] == 'not_found':
+                        review[field]['reason'] = 'The order says asset valuation could not be commenced; no valuation amounts are documented.'
+                        review[field]['sources'] = [{'document_id':document_id,'page':page['page'],'excerpt':not_started.group()}]
     return review

@@ -198,7 +198,7 @@ Textile manufacturing'''}]}, 'wrapped')
     assert record['professional']['page'] == 2
 
 
-def test_debtor_registered_address_in_professional_caption_is_read_to_pin():
+def test_professional_caption_address_is_not_assigned_to_debtor():
     text = '''CS (Dr.) Rajas Shreeram Bodas
 Resolution Professional of M/s Shitole Tissue Culture Private Limited
 Having its registered address at:
@@ -207,9 +207,9 @@ Suraksha Apartments, Navi Peth, Near
 Vaikunth, Pune, Maharashtra – 411 030
 … Applicant/Resolution Professional'''
     record, _ = extract_case({'pages': [{'page': 2, 'text': text}]}, 'address')
-    assert record['registered_office']['value'] == ('Survey No. 997/18, Satsang Society, '
-        'Suraksha Apartments, Navi Peth, Near Vaikunth, Pune, Maharashtra – 411 030')
-    assert record['registered_office']['page'] == 2
+    # This entire block is captioned Applicant/Resolution Professional. The
+    # pronoun "its" does not establish whose registered office is listed.
+    assert record['registered_office'] is None
     # Personal service addresses must not become the corporate debtor's office.
     record, _ = extract_case({'pages': [{'page': 2, 'text': text.replace('its registered', 'his registered')}]}, 'address')
     assert record['registered_office'] is None

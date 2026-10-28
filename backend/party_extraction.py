@@ -34,6 +34,15 @@ def coram_names(page):
         name = ' '.join(' '.join(entry['parts']).split())
         if len(name.split()) >= 2:
             result.append((name.title() if name.isupper() else name, block))
+    if not result:
+        # Some digital PDFs put each word on a separate line. Use only the
+        # bounded Coram block, so counsel/appearance names remain excluded.
+        flat = ' '.join(block.split())
+        for match in re.finditer(r'\b(?:Shri\.?|Sh\.|Justice|Mrs\.?|Ms\.?|Mr\.?)\s+'
+                r'([A-Za-z][A-Za-z .-]{2,100}?)\s*\((?:Judicial|Technical)\)', flat, re.I):
+            name = match[1].strip(' ,.;:-')
+            if len(name.split()) >= 2:
+                result.append((name.title() if name.isupper() else name, block))
     return result
 
 

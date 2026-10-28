@@ -12,6 +12,14 @@ def compact(value):
 def table_money(value, money, unit='INR'):
     # A numeric cell may wrap its final digits onto the following line.
     raw = (value or '').strip()
+    # PF and other employee dues can share a cell. N/A is unknown, not a
+    # numeric prefix to be joined to the following known component.
+    if '\n' in raw and re.search(r'\bN\s*/\s*A\b', raw, re.I):
+        parts = [part.strip() for part in raw.splitlines() if part.strip()
+                 and not re.fullmatch(r'N\s*/\s*A', part.strip(), re.I)]
+        amounts = [money(part, UNIT_FACTORS[unit]) for part in parts]
+        if amounts and all(amount is not None for amount in amounts):
+            return str(sum((Decimal(amount) for amount in amounts), Decimal(0)).quantize(Decimal('.01')))
     if '\n' in raw and re.search(r'\bnil\b', raw, re.I):
         parts = [part.strip() for part in raw.splitlines() if part.strip()]
         amounts = [Decimal(0) if part.casefold() == 'nil' else money(part, UNIT_FACTORS[unit]) for part in parts]
