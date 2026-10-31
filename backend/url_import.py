@@ -8,8 +8,8 @@ import httpx
 from bs4 import BeautifulSoup
 from pydantic import BaseModel, Field
 
-from .extraction import extract_pdf
-from .final_orders import final_decision
+from .codex_extraction import extract_pdf
+from .codex_extraction import final_decision
 from .ibbi_orders import parse_listing
 
 
@@ -89,15 +89,13 @@ def crawl(request, ingest, progress):
                 extraction = extract_pdf(content)
                 decision = final_decision(extraction)
                 if decision is None:
-                    unreadable = sum(len(page.get('text','').strip()) < 30 for page in extraction['pages'])
-                    reason = (f'{unreadable} PDF pages have little or no readable text; verify OCR and the official PDF'
-                              if unreadable else 'No supported operative final-order wording found; verify the official PDF')
+                    reason = 'Codex CLI did not identify an operative final order; review the original PDF'
                     result['review_required'] += 1
                     result['review_items'].append({'url':url,'subject':subjects.get(url,''),'reason':reason})
                     progress(result)
                     return
                 record = ingest(content, urlsplit(url).path.rsplit("/", 1)[-1] or "document.pdf", url,
-                                preextracted=extraction, final_decision=decision)
+                                preextracted=extraction)
             else:
                 record = ingest(content, urlsplit(url).path.rsplit("/", 1)[-1] or "document.pdf", url)
             result["duplicates" if record["duplicate"] else "imported"] += 1
@@ -140,6 +138,8 @@ def crawl(request, ingest, progress):
                         continue
                     url = urlunsplit((parts.scheme, parts.netloc, parts.path, parts.query, ""))
                     if parts.path.lower().endswith(".pdf") or anchor.get("type") == "application/pdf":
+                        if screen_orders and not parts.path.startswith("/uploads/order/"):
+                            continue
                         if len(files) < request.max_files:
                             import_pdf(url)
                             if len(files) >= request.max_files:

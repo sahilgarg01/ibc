@@ -152,13 +152,6 @@ def initialize(root: Path, database_url: str | None = None):
                 db.execute('ALTER TABLE source_orders ADD COLUMN document_id TEXT REFERENCES documents(id)')
     from .structured import initialize_structured
     with connection(root, database_url=url) as db:
-        from .extraction import pdf_subject
-        for row in db.execute("SELECT id,extraction FROM documents WHERE subject IS NULL").fetchall():
-            extraction = json.loads(row["extraction"])
-            if "subject" not in extraction:
-                extraction["subject"], extraction["subject_source"] = pdf_subject(extraction["pages"])
-            db.execute("UPDATE documents SET subject=?,extraction=? WHERE id=?",
-                       (extraction.get("subject"), json.dumps(extraction), row["id"]))
         initialize_structured(db)
         # Backfill only unambiguous URL links; never infer a PDF from its case.
         for order in db.execute('SELECT id,pdf_url FROM source_orders WHERE document_id IS NULL').fetchall():

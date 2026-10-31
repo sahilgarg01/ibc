@@ -18,8 +18,7 @@ from fastapi.responses import FileResponse, Response, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from .db import connection, decode, initialize
-from .extraction import extract_pdf, needs_pdf_reread
-from .final_orders import final_decision as classify_final_order
+from .codex_extraction import extract_pdf, record_for_document, fill_missing, final_decision as classify_final_order
 from .ibbi_orders import download_order
 from .models import Approval, CaseRecord, SaveRecord, metrics
 from .structured import project, match_candidates, persist_import_files
@@ -27,7 +26,6 @@ from .url_import import ImportRequest, public_url, crawl
 from .research_analytics import case_profiles, research_analytics, select_recent_cases
 from .automatic_orders import AutomaticOrders, ScheduleSettings, DEFAULT_CATEGORIES, set_document_category
 from .document_matching import fingerprint, candidates as document_candidates
-from .case_extraction import extract_case, fill_missing
 from .catalogue import catalogue_entries
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -96,8 +94,8 @@ def create_app(data_dir: Path | None = None):
 
         visit(record.model_dump(mode="json"))
 
-    def ingest(content, filename, source_url, case_id=None, sample_record=None, max_bytes=MAX_UPLOAD,
-               preextracted=None, final_decision=None):
+    def ingest(content, filename, source_url, case_id=None, max_bytes=MAX_UPLOAD,
+               preextracted=None):
         if len(content) > max_bytes:
             raise HTTPException(413, f"PDF exceeds the {max_bytes//(1024*1024)} MB limit")
         digest = hashlib.sha256(content).hexdigest()
@@ -114,18 +112,7 @@ def create_app(data_dir: Path | None = None):
         doc_id = uuid4().hex
         new_case = case_id is None
         case_id = case_id or uuid4().hex
-        record = CaseRecord().model_dump(mode="json")
-        if not sample_record:
-            record, extraction['case_facts'] = extract_case(extraction,doc_id)
-            extraction['warnings'].extend(extraction['case_facts']['warnings'])
-            if final_decision and record['outcome']!=final_decision['outcome']:
-                record['outcome']=final_decision['outcome']
-                record['outcome_evidence']={'value':final_decision['excerpt'],
-                    'document_id':doc_id,'page':final_decision['page']}
-        if sample_record:
-            # Curated starter data is explicitly separate from generic extraction.
-            serialized = json.dumps(sample_record).replace("SAMPLE_DOCUMENT", doc_id)
-            record = CaseRecord.model_validate_json(serialized).model_dump(mode="json")
+        record = record_for_document(extraction, doc_id)
         path = storage / "documents" / f"{doc_id}.pdf"
         try:
             with db_connection() as db:
@@ -148,7 +135,7 @@ def create_app(data_dir: Path | None = None):
                 validate_evidence(db, case_id, CaseRecord.model_validate(record if new_case or existing_case['review_status']=='draft' else existing_case['record']))
                 project(db, case_id, record if new_case or existing_case['review_status']=='draft' else existing_case['record'])
                 fingerprint(db, doc_id, filename, extraction, now())
-                audit(db, case_id, "document_added", {"document_id": doc_id, "sha256": digest, "starter_record": record if sample_record else None})
+                audit(db, case_id, "document_added", {"document_id": doc_id, "sha256": digest, "provider": "codex_cli"})
         except (sqlite3.IntegrityError, psycopg.errors.UniqueViolation):
             path.unlink(missing_ok=True)
             with db_connection() as db:
@@ -168,7 +155,7 @@ def create_app(data_dir: Path | None = None):
         return {"status": "ok"}
 
     collector = AutomaticOrders(db_connection, lambda content, filename, url, extraction, decision:
-        ingest(content,filename,url,max_bytes=50*1024*1024,preextracted=extraction,final_decision=decision))
+        ingest(content,filename,url,max_bytes=50*1024*1024,preextracted=extraction))
 
     @app.get('/api/scheduler')
     def scheduler_status():
@@ -315,15 +302,6 @@ def create_app(data_dir: Path | None = None):
         if not row:
             raise HTTPException(404, "Document not found")
         extraction=json.loads(row['extraction'])
-        if needs_pdf_reread(extraction):
-            with db_connection() as db:
-                stored=db.execute('SELECT content FROM documents WHERE id=?',(doc_id,)).fetchone()
-            if not stored:
-                raise HTTPException(404,'Document not found')
-            content=bytes(stored['content']) if stored['content'] is not None else (storage/'documents'/f'{doc_id}.pdf').read_bytes()
-            # Source viewing may retry the reader, but cannot repopulate a saved
-            # case. Re-extraction is an explicit action, independent of reads.
-            extraction=extract_pdf(content)
         result = {"filename": row["filename"], **extraction}
         with db_connection() as db:
             source = db.execute('SELECT subject FROM source_orders WHERE document_id=? ORDER BY order_date DESC LIMIT 1', (doc_id,)).fetchone()
@@ -339,11 +317,15 @@ def create_app(data_dir: Path | None = None):
             if not row:
                 raise HTTPException(404,'Document not found')
             case=get_case(db,row['case_id'])
-            extraction=json.loads(row['extraction'])
-            if needs_pdf_reread(extraction):
-                content=bytes(row['content']) if row['content'] is not None else (storage/'documents'/f'{doc_id}.pdf').read_bytes()
-                extraction=extract_pdf(content)
-            facts,report=extract_case(extraction,doc_id)
+            if case['review_status'] != 'draft':
+                raise HTTPException(409, 'Only draft cases can be extracted again')
+            content = bytes(row['content']) if row['content'] is not None else (storage/'documents'/f'{doc_id}.pdf').read_bytes()
+            try:
+                extraction = extract_pdf(content)
+                facts = record_for_document(extraction, doc_id)
+            except ValueError as exc:
+                raise HTTPException(422, str(exc)) from exc
+            report = extraction['case_facts']
             # Multiple automatic refreshes must not turn stale suggestions into
             # manual facts. Rebuild only a single-document draft with an intact
             # automatic-only history; entered and approved records retain precedence.
@@ -357,9 +339,9 @@ def create_app(data_dir: Path | None = None):
             merged=facts if auto_created else fill_missing(case['record'],facts)
             extraction['case_facts']=report
             extraction['warnings'].extend(w for w in report['warnings'] if w not in extraction['warnings'])
-            validate_evidence(db,case['id'],CaseRecord.model_validate(merged))
             db.execute('UPDATE documents SET extraction=? WHERE id=?',(json.dumps(extraction),doc_id))
-            db.execute('UPDATE documents SET subject=COALESCE(subject,?) WHERE id=?',(extraction.get('subject'),doc_id))
+            db.execute('UPDATE documents SET subject=? WHERE id=?',(extraction.get('subject'),doc_id))
+            validate_evidence(db,case['id'],CaseRecord.model_validate(merged))
             db.execute('DELETE FROM document_matches WHERE document_id=? OR matched_document_id=?',(doc_id,doc_id))
             db.execute('DELETE FROM document_identifiers WHERE document_id=?',(doc_id,))
             db.execute('DELETE FROM document_fingerprints WHERE document_id=?',(doc_id,))
@@ -386,8 +368,7 @@ def create_app(data_dir: Path | None = None):
         content = path.read_bytes()
         if hashlib.sha256(content).hexdigest() != manifest["sha256"]:
             raise HTTPException(409, "Sample checksum differs from the reviewed fixture")
-        record = json.loads((ROOT / "samples/starter-record.json").read_text(encoding="utf-8"))
-        return ingest(content, path.name, manifest["source_url"], sample_record=record)
+        return ingest(content, path.name, manifest["source_url"])
 
     @app.get("/api/sample/pdf")
     def sample_pdf():
@@ -525,7 +506,7 @@ def create_app(data_dir: Path | None = None):
             decision = classify_final_order(extraction)
             if decision is None:
                 raise HTTPException(422, "This PDF does not establish final plan approval or a liquidation order")
-            result = ingest(content, path.name, row["pdf_url"], preextracted=extraction, final_decision=decision)
+            result = ingest(content, path.name, row["pdf_url"], preextracted=extraction)
         except (ValueError, OSError) as exc:
             raise HTTPException(422, str(exc)) from exc
         except Exception as exc:

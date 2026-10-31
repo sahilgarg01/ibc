@@ -12,8 +12,8 @@ from bs4 import BeautifulSoup
 from pydantic import BaseModel, Field
 
 from .ibbi_orders import BASE, parse_listing
-from .extraction import extract_pdf
-from .final_orders import SCREENING_VERSION, final_decision
+from .codex_extraction import extract_pdf
+from .codex_extraction import SCREENING_VERSION, final_decision
 from .structured import persist_import_files
 from .url_import import fetch
 
@@ -280,9 +280,7 @@ class AutomaticOrders:
                         extraction=json.loads(stored_pdf['extraction']) if stored_pdf else extract_pdf(pdf)
                         decision=final_decision(extraction)
                         if decision is None:
-                            unreadable=sum(len(p.get('text','').strip())<30 for p in extraction['pages'])
-                            reason=(f'{unreadable} PDF pages have little or no readable text; verify OCR and the official PDF'
-                                    if unreadable else 'No supported operative final-order wording found; verify the official PDF')
+                            reason='Codex CLI did not identify an operative final order; review the original PDF'
                             with self.connect() as db:
                                 db.execute("UPDATE source_orders SET pdf_status='review_required',pdf_error=? WHERE id=?",
                                            (f'{SCREENING_VERSION}: {reason}',order['id']))

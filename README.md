@@ -6,35 +6,29 @@ The **IBBI order catalogue** shows public order listings and imported PDF files 
 
 ## Run locally
 
-Python 3.10–3.12 is required (the OCR dependency does not support Python 3.13). On this machine, from the project root:
+Install Codex CLI and authenticate with `codex login` under the same operating-system account that runs this backend. The ignored `.env` file contains the local configuration:
+
+```dotenv
+DATABASE_URL=postgresql://user:password@localhost:5432/ibc
+CODEX_CLI_PATH=codex
+CODEX_MODEL=
+CODEX_TIMEOUT_SECONDS=600
+```
+
+`CODEX_CLI_PATH` is the native executable name or absolute path. On Windows, use `codex.exe`; if PATH resolves to a `.cmd` wrapper, set the full path to the native executable instead. `CODEX_MODEL` is optional and defaults to your CLI configuration. This application no longer calls the OpenAI API directly or requires `OPENAI_API_KEY`.
+
+PostgreSQL is used when `DATABASE_URL` is set; otherwise the app uses SQLite. Install requirements in the backend environment; `pypdf` and `pypdfium2` are PDF tools Codex can use while reading the file, rather than application extraction rules.
 
 ```powershell
-& 'C:\Users\Sahil\AppData\Local\Programs\Python\Python312\python.exe' -m venv .venv
 .\.venv\Scripts\python.exe -m pip install -r requirements.txt
 .\.venv\Scripts\python.exe -m uvicorn backend.main:app --reload --host 127.0.0.1 --port 8000
 ```
 
-On Linux, use the same virtual environment for dependency installation and the server:
+Open http://127.0.0.1:8000 and upload a PDF. The backend creates a temporary folder containing the original PDF and the form JSON schema, then runs `codex exec --output-schema schema.json --output-last-message result.json` there. Codex reads the PDF path using local tools and returns JSON. The CLI has no PDF attachment flag. Its JSON response is validated and saved with the case fields and PDF in the database. The form then loads those saved fields through `GET /api/cases/{id}`. Opening a case or viewing saved content never calls Codex CLI. Uploads are limited to 15 MB; import downloads are limited to 50 MB. Documents must have at most 250 physical pages.
 
-```bash
-python3.12 -m venv .venv
-.venv/bin/python -m pip install -r requirements.txt
-.venv/bin/python -m uvicorn backend.main:app --reload --host 127.0.0.1 --port 8000
-```
+Missing fields remain empty. Extraction failures save no partial case. Existing documents and saved records remain available. **Extract again with Codex CLI** explicitly processes a stored draft PDF again; entered fields retain precedence, while an untouched single-document draft can be refreshed. Duplicate uploads reuse the existing record without another CLI extraction. The sample import also uses Codex CLI.
 
-After updating the project, rerun the dependency installation command and restart the server. If PDF imports report `No module named 'pdfplumber'`, install the requirements using the Python interpreter that runs the server, then retry the import.
-
-PostgreSQL 18 is installed locally. The ignored `.env` file holds the connection settings; never commit it. The `ibc` database and tables have been created, and the single selected document `0f637acc6a9843fea2f682df499de5b7` and its case were migrated. For a fresh setup, run `python -m scripts.setup_postgres` after configuring `.env`, then `python -m scripts.migrate_one --document-id <id>` for exactly one chosen SQLite document. `python -m scripts.verify_postgres` checks the migrated case and PDF through the API.
-
-VS Code is configured to use `.venv\Scripts\python.exe` in `.vscode/settings.json`. Open the `ibc` folder itself as the workspace. If imports still show as unresolved, run **Python: Select Interpreter** in the Command Palette and select that file, then reload the window.
-
-On another machine, use its installed Python path for the first command. Open [http://127.0.0.1:8000](http://127.0.0.1:8000). Click **Load sample case**, review the claims and evidence on page 9, then save or approve it. The API reference is at [http://127.0.0.1:8000/docs](http://127.0.0.1:8000/docs). To run the tests:
-
-```powershell
-.\.venv\Scripts\python.exe -m pytest -q
-```
-
-With PostgreSQL configured, case records, extracted page text, review history and PDF bytes are stored in PostgreSQL. A local PDF copy is also kept under `data/documents/`; the older `data/ibc.sqlite3` is retained as a backup. Set `IBC_DATA_DIR` to change the local file directory. Uploaded PDFs are limited to 15 MB and 250 pages.
+Run tests with `.\.venv\Scripts\python.exe -m pytest -q`. Tests mock the Codex CLI process and use isolated SQLite databases.
 
 ## Import the public IBBI order catalogue
 
@@ -62,7 +56,7 @@ Run these from the project root in a **separate terminal** while the app is runn
 
 `sync` reads the public GET form and every pagination page. It records the page number, fetch time, date, subject, remark, bench when a bench filter was used, and the official PDF URL. It detects duplicate PDF URLs and checkpoints each page. Failed listing pages remain visible in `status` and are retried on the next run. Use `--refresh` to revisit older pages after the site changes, or `--max-pages 5` for a short test. `sync-pdfs` stores normalized PDFs and their hashes, bytes and download status. It records download errors instead of silently treating them as complete. `follow-pdfs` is available for a long-running PDF queue after you start the listing sync. Check `status` and the logs before claiming the collection is complete.
 
-Automatic IBBI collection is controlled from **Document imports**. All categories and import paths (automatic sync, URL import, upload and explicit source review) require evidence of final resolution-plan approval or a liquidation order. A readable PDF alone does not qualify. High Court, Supreme Court and appellate judgments must contain an explicit operative direction; references to earlier approvals do not qualify. Both automatic sync and manual IBBI listing imports use the same subject/remarks screening before download. Appointment of a liquidator proceeds to PDF screening because it can accompany the liquidation direction; appointment/replacement of an RP and admission orders are screened out. Skipped rows have `pdf_status=skipped_nonfinal`; incomplete OCR in automatic sync remains a retryable failure. Existing skips are reconsidered after the screening-version update. Previously imported documents are retained. PDFs exceeding the 50 MB sync/URL-download cap are recorded as failures; manual uploads retain their 15 MB limit. Extracted case facts remain drafts until reviewed.
+Automatic IBBI collection is controlled from **Document imports**. PDFs are sent to Codex CLI for fields and outcome classification. Imports from the official order catalogue require a supported final outcome; other orders remain available for source review. Listing metadata alone does not fill case facts. Codex CLI failures are recorded for retry. Existing imported documents and saved records are retained. PDFs exceeding the 50 MB sync/download cap are recorded as failures; manual uploads retain their 15 MB limit. Extracted cases remain drafts until reviewed.
 
 ## Official sample
 
@@ -70,7 +64,7 @@ The included [resolution approval order](samples/indo-global-resolution-order.pd
 
 The IBBI download response included a short HTML loader before `%PDF-`. The exact response is retained as `samples/official-response.bin`; the bundled PDF removes those 369 prefix bytes so PDF readers accept it. [Sample metadata](samples/manifest.json) records both SHA-256 hashes and the transformation. [Starter data](samples/starter-record.json) is a manually transcribed **draft**, with page references. The page 9 table supplies four creditor-category totals; the order does not supply all requested party-wise claims, actual payments or verified past owners. The starter record leaves those fields unknown. Its computed haircut refers only to the nominal amounts in the table, subject to the order's plan conditions.
 
-Uploads and automatic imports populate draft case fields from explicit PDF evidence, including recognized financial tables, party/role labels, dates, ownership labels, debtor registered office and industry, successful resolution applicant and CIN, valuation amounts, and plan totals. New uploads and imports populate a draft immediately using the current shared extractor. Opening an existing draft does not change its saved values; re-extraction requires the explicit Fill missing fields from PDF action. A plan haircut can use either matched admitted/planned creditor rows or a single plan's explicit admitted-claims total and plan amount; the screen names the basis. Each value retains a document/page reference. An order that merely quotes an earlier approval is not itself a final approval. Scanned, unlabeled or unsupported layouts still require OCR/manual review, and a resolution applicant is not assumed to be the post-resolution owner. See [fact extraction](docs/fact-extraction.md).
+Uploads and imports use `backend/codex_extraction.py` for all PDF field extraction. The old application OCR, table parsers and field rules remain removed. The model returns the existing form schema, supporting excerpts and physical page references. The review screen displays saved excerpts; use the original PDF to inspect the full source. See [fact extraction](docs/fact-extraction.md).
 
 See [architecture](docs/architecture.md) for the components, data rules and expansion path.
 
@@ -85,3 +79,7 @@ PostgreSQL now includes separate case details, claims, people, plans, entities a
 The **Research analytics** panel defaults to the last 10 years of dated, approved cases. It reports party-wise filed/admitted claim coverage, plan and payment coverage, IRP/RP-associated case haircuts with supporting case links, bench timelines, and before/after owner or director overlaps. A repeated 50%+ haircut flag requires at least two reviewed cases; it describes association, not responsibility for the plan. Undated approved cases are counted separately rather than silently included. Use **Add document → Add to case** to attach a related creditor list or later order to an existing case for review; facts absent from a document remain unknown.
 
 To verify real final orders through both import methods without changing application data, run `.\.venv\Scripts\python.exe -m scripts.verify_final_imports`. This downloads two public PDFs into memory and verifies resolution/liquidation review drafts in disposable SQLite databases.
+
+Codex CLI extraction uses a temporary workspace with the workspace-write sandbox and no interactive approval prompts. The PDF, schema, intermediate files and CLI output are cleaned up after each run. Successful JSON is retained in `documents.extraction.response`; validated fields are stored in `cases.record` and projected into the structured tables. Failed, timed-out, unreadable or invalid results do not create a partial case.
+
+If the CLI cannot find its home directory or login, set a valid `CODEX_HOME` for the backend account and run `codex login` there before starting the server. The backend does not create or modify your Codex authentication configuration.

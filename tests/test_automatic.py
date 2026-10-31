@@ -3,12 +3,10 @@ from io import BytesIO
 from urllib.parse import urlsplit, parse_qs
 
 from fastapi.testclient import TestClient
-from pypdf import PdfReader, PdfWriter
 
 from backend.main import ROOT, create_app
 from backend.automatic_orders import DEFAULT_CATEGORIES
-from backend.final_orders import final_decision, skip_listing
-from backend.extraction import extract_pdf
+from backend.codex_extraction import final_decision, extract_pdf
 from backend.db import connection
 import hashlib
 import pytest
@@ -29,38 +27,11 @@ def wait_job(client, job_id):
     raise AssertionError('Job did not finish')
 
 
-def test_final_order_screening_and_procedural_listing_skip(tmp_path, monkeypatch):
-    assert skip_listing('Interlocutory application allowed', 'Order')
-    assert skip_listing('Appointment of RP', 'Order')
-    assert not skip_listing('Approval of resolution plan', 'Final order')
-    sample=(ROOT/'samples/indo-global-resolution-order.pdf').read_bytes()
-    assert final_decision(extract_pdf(sample))['outcome']=='resolution_approved'
-    html=b'''<table class="reporttable"><tbody>
-      <tr><td>1</td><td>08 Aug, 2022</td><td><a href="/uploads/order/procedure.pdf">Interlocutory application allowed</a></td><td>Order</td></tr>
-      <tr><td>2</td><td>21 Apr, 2022</td><td><a href="/uploads/order/final.pdf">Approval of resolution plan</a></td><td>Final order</td></tr>
-      </tbody></table>'''
-    downloaded=[]
-    def fetch(client,url,limit):
-        if url.endswith('.pdf'):
-            downloaded.append(url)
-            return sample,url
-        return html,url
-    monkeypatch.setattr('backend.automatic_orders.fetch',fetch)
-    with TestClient(create_app(tmp_path)) as client:
-        job=wait_job(client,client.post('/api/scheduler/sync?category=nclt').json()['id'])
-        assert job['status']=='completed' and job['result']['skipped']==1
-        assert job['result']['imported']==1 and len(downloaded)==1
-        rows=client.get('/api/orders?category=nclt').json()['items']
-        assert {row['pdf_status'] for row in rows}=={'downloaded','skipped_nonfinal'}
 
 
 def test_distinct_source_rows_keep_their_pdf_and_official_subject(tmp_path, monkeypatch):
     original = (ROOT/'samples/indo-global-resolution-order.pdf').read_bytes()
-    writer = PdfWriter()
-    writer.clone_document_from_reader(PdfReader(BytesIO(original)))
-    writer.add_metadata({'/Title': 'Misleading PDF metadata'})
-    output = BytesIO()
-    writer.write(output)
+    output = BytesIO(original+b'\n%changed-container')
     pdfs = {'first.pdf': original, 'second.pdf': output.getvalue()}
     html = b'''<table class="reporttable"><tbody>
         <tr><td>1</td><td>08 Aug, 2022</td><td><a href="/uploads/order/first.pdf">Official first subject</a></td><td>First</td></tr>
@@ -137,7 +108,7 @@ original_wait = Event.wait
 @pytest.mark.parametrize('category', ['high-courts', 'supreme-court', 'nclat', 'drat', 'drts', 'ibbi', 'ipa-rvo', 'other-courts'])
 def test_nonfinal_other_court_orders_are_not_imported(tmp_path, monkeypatch, category):
     pdf = (ROOT/'samples/indo-global-resolution-order.pdf').read_bytes()
-    extraction = {'pages': [{'page': 1, 'text': 'IN THE HIGH COURT OF GUJARAT. The tax demand notices are quashed.'}],
+    extraction = {'record': {'outcome': 'unknown'}, 'pages': [{'page': 1, 'text': 'IN THE HIGH COURT OF GUJARAT. The tax demand notices are quashed.'}],
                   'warnings': [], 'subject': 'High Court judgment'}
     monkeypatch.setattr('backend.automatic_orders.extract_pdf', lambda content: extraction)
     monkeypatch.setattr('backend.automatic_orders.fetch',
@@ -155,105 +126,30 @@ def test_nonfinal_other_court_orders_are_not_imported(tmp_path, monkeypatch, cat
                  '2026-10-15', '2026-10-15', 'skipped_nonfinal', 'PDF does not establish final plan approval or a liquidation order'))
         job = wait_job(client, client.post('/api/scheduler/sync?category='+category).json()['id'])
         assert job['result']['imported'] == 0, job
-        assert job['result']['skipped'] == 1
+        assert job['result']['review_required'] == 1
         item = client.get('/api/orders?category='+category).json()['items'][0]
         assert item['case_id'] is None
-        assert item['pdf_status'] == 'skipped_nonfinal'
+        assert item['pdf_status'] == 'review_required'
         again = wait_job(client, client.post('/api/scheduler/sync?category='+category).json()['id'])
         assert again['result']['known_orders'] == 1
         assert again['result']['imported'] == 0
 
 
-def test_incomplete_ocr_is_retried_instead_of_cached_as_nonfinal(tmp_path, monkeypatch):
-    pdf = (ROOT/'samples/indo-global-resolution-order.pdf').read_bytes()
-    extraction = {'pages': [{'page': 1, 'text': '', 'ocr_attempted': True}],
-                  'warnings': ['OCR could not process the scanned pages.']}
-    monkeypatch.setattr('backend.automatic_orders.extract_pdf', lambda content: extraction)
-    monkeypatch.setattr('backend.automatic_orders.fetch',
-                        lambda client, url, limit: (pdf if url.endswith('.pdf') else listing('nclt').replace(b'page=2', b'page=1'), url))
-    with TestClient(create_app(tmp_path)) as client:
-        first = wait_job(client, client.post('/api/scheduler/sync?category=nclt').json()['id'])
-        assert first['result']['failed'] == 1 and first['result']['skipped'] == 0
-        assert client.get('/api/orders?category=nclt').json()['items'][0]['pdf_status'] == 'failed'
-        monkeypatch.setattr('backend.automatic_orders.extract_pdf', extract_pdf)
-        second = wait_job(client, client.post('/api/scheduler/sync?category=nclt').json()['id'])
-        assert second['result']['imported'] == 1, second
 
 
-@pytest.mark.parametrize('wording', [
-    'We hereby order liquidation of the corporate debtor.',
-    'The corporate debtor is hereby ordered to be liquidated.',
-    'Liquidation of the corporate debtor is hereby ordered.',
-    'We hereby direct the liquidation of the corporate debtor.',
-    'The corporate debtor shall be liquidated.',
-    'The corporate debtor is directed to be liquidated.',
-])
-def test_liquidation_operative_wording(wording):
-    extraction = {'pages': [{'page': 1, 'text': 'NATIONAL COMPANY LAW TRIBUNAL'},
-                            {'page': 2, 'text': wording}]}
-    decision = final_decision(extraction)
-    assert decision['outcome'] == 'liquidation_ordered'
-    assert decision['page'] == 2
 
 
-@pytest.mark.parametrize('heading', ['IN THE HIGH COURT OF GUJARAT', 'IN THE SUPREME COURT OF INDIA',
-    'NATIONAL COMPANY LAW APPELLATE TRIBUNAL', 'DEBTS RECOVERY TRIBUNAL'])
-@pytest.mark.parametrize('wording,outcome', [
-    ('We hereby approve the resolution plan.', 'resolution_approved'),
-    ('We hereby direct the liquidation of the corporate debtor.', 'liquidation_ordered')])
-def test_final_directions_from_other_courts(heading, wording, outcome):
-    decision = final_decision({'pages': [{'page': 1, 'text': heading}, {'page': 2, 'text': wording}]})
-    assert decision['outcome'] == outcome
 
 
-@pytest.mark.parametrize('text', [
-    'Counsel submitted that we hereby approve the resolution plan.',
-    'The earlier order stated: "The resolution plan is hereby approved".',
-    'We hereby order liquidation of the corporate debtor if negotiations fail.',
-])
-def test_quotes_and_conditional_directions_are_not_final(text):
-    assert final_decision({'pages': [{'page': 1, 'text': 'IN THE HIGH COURT OF GUJARAT'},
-                                     {'page': 2, 'text': text}]}) is None
 
 
-def test_upload_rejects_readable_nonfinal_order(tmp_path, monkeypatch):
-    monkeypatch.setattr('backend.main.extract_pdf', lambda content: {
-        'pages': [{'page': 1, 'text': 'IN THE HIGH COURT OF GUJARAT. Tax notices are quashed.'}],
-        'warnings': []})
-    with TestClient(create_app(tmp_path)) as client:
-        response = client.post('/api/documents', files={'file': ('order.pdf', b'%PDF-1.4', 'application/pdf')})
-        assert response.status_code == 422
-        assert client.get('/api/cases').json() == []
 
 
-@pytest.mark.parametrize('wording,outcome', [
-    ('We hereby direct the liquidation of the corporate debtor.', 'liquidation_ordered'),
-    ('The resolution plan is hereby approved.', 'resolution_approved'),
-])
-def test_nclt_final_outcomes_import_and_persist_evidence(tmp_path, monkeypatch, wording, outcome):
-    pdf = (ROOT/'samples/indo-global-resolution-order.pdf').read_bytes()
-    extraction = {'pages': [{'page': 1, 'text': 'NATIONAL COMPANY LAW TRIBUNAL. '+wording}],
-                  'warnings': [], 'subject': 'Final order'}
-    monkeypatch.setattr('backend.automatic_orders.extract_pdf', lambda content: extraction)
-    monkeypatch.setattr('backend.automatic_orders.fetch',
-                        lambda client, url, limit: (pdf if url.endswith('.pdf') else listing('nclt').replace(b'page=2', b'page=1'), url))
-    with TestClient(create_app(tmp_path)) as client:
-        job = wait_job(client, client.post('/api/scheduler/sync?category=nclt').json()['id'])
-        assert job['result']['imported'] == 1, job
-        order = client.get('/api/orders?category=nclt').json()['items'][0]
-        case = client.get('/api/cases/'+order['case_id']).json()
-        assert case['record']['outcome'] == outcome
-        assert case['record']['outcome_evidence']['page'] == 1
-        assert case['review_status'] == 'draft'
 
 
 def test_name_text_and_cin_are_candidates_not_dropped(tmp_path):
     original=(ROOT/'samples/indo-global-resolution-order.pdf').read_bytes()
-    writer=PdfWriter()
-    writer.clone_document_from_reader(PdfReader(BytesIO(original)))
-    writer.add_metadata({'/Title':'Changed container metadata'})
-    output=BytesIO()
-    writer.write(output)
+    output=BytesIO(original+b'\n%changed-container')
     with TestClient(create_app(tmp_path)) as client:
         first=client.post('/api/documents',files={'file':('same.pdf',original,'application/pdf')}).json()
         second=client.post('/api/documents',files={'file':('same.pdf',output.getvalue(),'application/pdf')}).json()
@@ -266,11 +162,7 @@ def test_name_text_and_cin_are_candidates_not_dropped(tmp_path):
 
 def test_same_official_order_name_and_date_are_review_candidates(tmp_path):
     original=(ROOT/'samples/indo-global-resolution-order.pdf').read_bytes()
-    writer=PdfWriter()
-    writer.clone_document_from_reader(PdfReader(BytesIO(original)))
-    writer.add_metadata({'/Title':'Another PDF container'})
-    output=BytesIO()
-    writer.write(output)
+    output=BytesIO(original+b'\n%another-container')
     with TestClient(create_app(tmp_path)) as client:
         first=client.post('/api/documents',files={'file':('first.pdf',original,'application/pdf')}).json()
         second=client.post('/api/documents',files={'file':('second.pdf',output.getvalue(),'application/pdf')}).json()
