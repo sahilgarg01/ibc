@@ -13,3 +13,5 @@
 .extraction-empty{color:var(--muted);font-size:12px;margin:8px 0}.extraction-coverage{border:1px solid var(--line);background:white;padding:14px 18px;border-radius:6px;margin:16px 0}.extraction-coverage summary{cursor:pointer;font-weight:600}.extraction-coverage p{color:var(--muted);font-size:13px}
 .money-source{color:var(--green);font-size:12px}.asset-card .money-source:not(:empty)::before{content:'Source unit: ';}
 .pdf-download-button{display:inline-block;border:1px solid var(--green);border-radius:6px;padding:9px 12px;color:var(--green);white-space:nowrap}.case-pdf-download{display:block;margin:6px 0;font-size:12px;white-space:nowrap}.case-pdf-downloads summary{cursor:pointer;color:var(--green);font-size:12px}.case-pdf-downloads a{max-width:240px;white-space:normal;overflow-wrap:anywhere}
+
+#source-page-image { display: block; width: 100%; height: auto; padding: 0 20px 20px; box-sizing: border-box; }

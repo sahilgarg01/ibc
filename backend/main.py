@@ -27,6 +27,7 @@ from .research_analytics import case_profiles, research_analytics, select_recent
 from .automatic_orders import AutomaticOrders, ScheduleSettings, DEFAULT_CATEGORIES, set_document_category
 from .document_matching import fingerprint, candidates as document_candidates
 from .catalogue import catalogue_entries
+from .pdf_source import read_source, render_source_page, VERSION as SOURCE_VERSION
 
 ROOT = Path(__file__).resolve().parent.parent
 MAX_UPLOAD = 15 * 1024 * 1024
@@ -298,17 +299,50 @@ def create_app(data_dir: Path | None = None):
     @app.get("/api/documents/{doc_id}/content")
     def document_content(doc_id: str):
         with db_connection() as db:
-            row = db.execute("SELECT filename,extraction FROM documents WHERE id=?", (doc_id,)).fetchone()
+            row = db.execute("SELECT filename,sha256,extraction,content FROM documents WHERE id=?", (doc_id,)).fetchone()
+            cached = db.execute("SELECT * FROM document_source_evidence WHERE document_id=?", (doc_id,)).fetchone()
         if not row:
             raise HTTPException(404, "Document not found")
+        if cached and cached['sha256'] == row['sha256'] and cached['reader_version'] == SOURCE_VERSION:
+            source_content = json.loads(cached['content'])
+        else:
+            try:
+                content = bytes(row['content']) if row['content'] is not None else (storage/'documents'/f'{doc_id}.pdf').read_bytes()
+                source_content = read_source(content)
+            except (ValueError, OSError) as exc:
+                raise HTTPException(422, str(exc)) from exc
+            with db_connection() as db:
+                db.execute("""INSERT INTO document_source_evidence(document_id,sha256,reader_version,content)
+                    VALUES(?,?,?,?) ON CONFLICT(document_id) DO UPDATE SET
+                    sha256=excluded.sha256,reader_version=excluded.reader_version,content=excluded.content""",
+                    (doc_id,row['sha256'],SOURCE_VERSION,json.dumps(source_content)))
         extraction=json.loads(row['extraction'])
-        result = {"filename": row["filename"], **extraction}
+        # Page content and warnings come only from Python. Codex's form response
+        # and case facts remain saved separately and are never regenerated here.
+        result = {"filename": row["filename"], **extraction,
+                  "pages": source_content['pages'], "warnings": source_content['warnings'],
+                  "source_provider": "python", "source_reader_version": SOURCE_VERSION}
         with db_connection() as db:
             source = db.execute('SELECT subject FROM source_orders WHERE document_id=? ORDER BY order_date DESC LIMIT 1', (doc_id,)).fetchone()
         result['pdf_subject'] = result.get('subject')
         if source:
             result['subject'] = source['subject']
         return result
+
+    @app.get('/api/documents/{doc_id}/pages/{page_number}/image')
+    def source_page_image(doc_id: str, page_number: int):
+        with db_connection() as db:
+            row = db.execute('SELECT content FROM documents WHERE id=?', (doc_id,)).fetchone()
+        if not row:
+            raise HTTPException(404, 'Document not found')
+        try:
+            content = bytes(row['content']) if row['content'] is not None else (storage/'documents'/f'{doc_id}.pdf').read_bytes()
+            png = render_source_page(content, page_number)
+        except IndexError as exc:
+            raise HTTPException(404, str(exc)) from exc
+        except (ValueError, OSError) as exc:
+            raise HTTPException(422, str(exc)) from exc
+        return Response(png, media_type='image/png')
 
     @app.post('/api/documents/{doc_id}/extract-facts')
     def populate_facts(doc_id: str):

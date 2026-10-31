@@ -12,7 +12,7 @@ The output schema is generated from the existing form model. It includes `record
 
 **Extract again with Codex CLI** processes a stored draft PDF. An untouched single-document draft can be refreshed; entered fields are preserved. Approved cases cannot be re-extracted. Legacy saved records remain readable without invoking the CLI.
 
-The source panel shows supporting excerpts; open the original PDF for full evidence. Human review and approval remain part of the application.
+The Source evidence panel reads full page text directly from the stored PDF using Python (`backend/pdf_source.py` and pypdf). The `/api/documents/{id}/content` endpoint caches these pages separately in `document_source_evidence`; it never uses model excerpts as page text and never reruns Codex. Existing documents are read and cached on their first source view. If a page has no readable text layer, the panel displays an image of the original page rendered with Python/PDFium. No OCR text is invented. Source viewing does not change case fields, versions, approvals or the saved Codex response. Human review and approval remain part of the application.
 
 Official OpenAI documentation: https://learn.chatgpt.com/docs/non-interactive-mode.
 

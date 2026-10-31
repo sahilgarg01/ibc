@@ -89,6 +89,10 @@ CREATE TABLE IF NOT EXISTS audit (
     id INTEGER PRIMARY KEY, case_id TEXT NOT NULL REFERENCES cases(id),
     action TEXT NOT NULL, snapshot TEXT NOT NULL, actor TEXT, created_at TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS document_source_evidence (
+    document_id TEXT PRIMARY KEY REFERENCES documents(id),
+    sha256 TEXT NOT NULL, reader_version TEXT NOT NULL, content TEXT NOT NULL
+);
 CREATE TABLE IF NOT EXISTS source_orders (
     id TEXT PRIMARY KEY, pdf_url TEXT NOT NULL UNIQUE,
     order_date TEXT, subject TEXT NOT NULL, remarks TEXT NOT NULL,

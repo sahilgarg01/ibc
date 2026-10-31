@@ -49,7 +49,7 @@ def cli_response(monkeypatch):
 
 
 def test_pdf_sent_directly_and_fields_loaded_from_database(tmp_path, monkeypatch, cli_response):
-    pdf = b"%PDF-test-direct-input"
+    pdf = (Path(__file__).resolve().parents[1] / "samples/indo-global-resolution-order.pdf").read_bytes()
     with TestClient(create_app(tmp_path)) as client:
         uploaded = client.post("/api/documents", files={"file": ("order.pdf", pdf, "application/pdf")})
         assert uploaded.status_code == 200, uploaded.text

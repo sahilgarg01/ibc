@@ -210,7 +210,7 @@ function renderDetail() { hideImportScreen();
   const reviewedFields=[...new Set(docs.flatMap(doc=>Object.keys(doc.extraction?.case_facts?.field_review||{})))];
   $('.warning',$('#detail')).insertAdjacentHTML('afterend',extractedSchedules(docs));
   if(reviewedFields.length){
-    $('.warning',$('#detail')).insertAdjacentHTML('afterend',`<details class="extraction-coverage" open><summary>PDF check for all ${reviewedFields.length} draft fields</summary><p>Each field is filled from evidence, marked Not documented, or marked Not applicable with an explanation. Status explanations are not saved as names, dates or amounts.</p><table><thead><tr><th>Draft field</th><th>Result</th><th>Evidence / explanation</th></tr></thead><tbody>${reviewedFields.map(key=>{
+    $('.warning',$('#detail')).insertAdjacentHTML('afterend',`<details class="extraction-coverage"><summary>PDF check for all ${reviewedFields.length} draft fields</summary><p>Each field is filled from evidence, marked Not documented, or marked Not applicable with an explanation. Status explanations are not saved as names, dates or amounts.</p><table><thead><tr><th>Draft field</th><th>Result</th><th>Evidence / explanation</th></tr></thead><tbody>${reviewedFields.map(key=>{
       const value=r[key],filled=Boolean(value)&&value!=='unknown'&&(!Array.isArray(value)||value.length>0),review=fieldReview(key,docs);
       const status=filled?'Filled':review?.status==='not_applicable'?'Not applicable':'Not documented';
       const source=filled?docs.flatMap(doc=>doc.extraction?.case_facts?.field_review?.[key]?.sources||[])[0]:review?.sources?.[0];
@@ -240,19 +240,52 @@ function renderDetail() { hideImportScreen();
   updateOutcomeRequirement();
   renderPage(); window.scrollTo(0,0);
 }
-function renderPage() {
-  const doc=state.detail.documents.find(d=>d.id===state.activeDoc) || state.detail.documents[0];
+async function renderPage() {
+  const detail=state.detail;
+  const doc=detail.documents.find(d=>d.id===state.activeDoc) || detail.documents[0];
   if(!doc) return;
+  const request=state.evidenceRequest=(state.evidenceRequest||0)+1;
   state.activeDoc=doc.id; $('#document-select').value=doc.id;
-  const pages=doc.extraction.pages; state.page=Math.min(Math.max(1,state.page),pages.length);
-  $('#page-count').textContent=`${state.page} / ${pages.length}`;
-  $('#prev-page').disabled=state.page===1; $('#next-page').disabled=state.page===pages.length;
-  $('#page-text').textContent=pages[state.page-1].text || '[No supporting excerpt saved for this page. Open the original PDF to review it.]';
+  if(!$('#source-page-image')) $('#page-text').insertAdjacentHTML('afterend','<img id="source-page-image" hidden alt="Original PDF page">');
+  const picture=$('#source-page-image');
+  picture.hidden=true; picture.removeAttribute('src');
+  $('#page-text').textContent='Loading source page from the PDF...';
+  $('#pdf-warning').textContent='';
+  $('#page-count').textContent='Loading...';
+  $('#prev-page').disabled=true; $('#next-page').disabled=true;
   $('#view-pdf').href=`/api/documents/${encodeURIComponent(doc.id)}/pdf#page=${state.page}`;
   $('#download-pdf').href=`/api/documents/${encodeURIComponent(doc.id)}/pdf?download=true`;
   $('#download-pdf').download=doc.filename||`${doc.id}.pdf`;
   $('#source-link').hidden=!doc.source_url; if(doc.source_url) $('#source-link').href=doc.source_url;
-  $('#pdf-warning').textContent=`PDF subject: ${doc.subject||'Subject unavailable'}. ${doc.extraction.warnings.join(' ')}`;
+  try {
+    if(!doc.sourceEvidence){
+      if(!doc.sourceRequest) doc.sourceRequest=api(`/api/documents/${encodeURIComponent(doc.id)}/content`)
+        .then(source=>{doc.sourceEvidence=source;return source;})
+        .catch(error=>{doc.sourceRequest=null;throw error;});
+      await doc.sourceRequest;
+    }
+    // Ignore a completed request after switching documents, cases or pages.
+    if(request!==state.evidenceRequest || detail!==state.detail || doc.id!==state.activeDoc || $('#detail').hidden)return;
+    const source=doc.sourceEvidence, pages=source.pages;
+    state.page=Math.min(Math.max(1,state.page),pages.length);
+    const page=pages[state.page-1];
+    $('#page-count').textContent=`${state.page} / ${pages.length}`;
+    $('#prev-page').disabled=state.page===1; $('#next-page').disabled=state.page===pages.length;
+    $('#view-pdf').href=`/api/documents/${encodeURIComponent(doc.id)}/pdf#page=${state.page}`;
+    $('#page-text').textContent=page.text || 'This page has no readable text layer. The original page is shown below.';
+    if(!page.text){
+      picture.alt=`Original PDF page ${state.page}`;
+      picture.onerror=()=>{picture.hidden=true;$('#page-text').textContent='This page could not be displayed. Open the original PDF to review it.';};
+      picture.src=`/api/documents/${encodeURIComponent(doc.id)}/pages/${state.page}/image`;
+      picture.hidden=false;
+    }
+    $('#pdf-warning').textContent=`PDF subject: ${doc.subject||'Subject unavailable'}. Source page content is read directly from the PDF using Python. ${(source.warnings||[]).join(' ')}`;
+  } catch(error) {
+    if(request!==state.evidenceRequest || detail!==state.detail || doc.id!==state.activeDoc || $('#detail').hidden)return;
+    $('#page-count').textContent='Unavailable';
+    $('#page-text').textContent='Source page could not be read. Open the original PDF to review it.';
+    $('#pdf-warning').textContent=error.message;
+  }
 }
 function collectRecord() {
   const out={outcome:$('#outcome').value,claims:[],financial_creditors:[],plan_submitters:[],withdrawn_submitters:[],applicant_directors:[],judges:[],asset_values:[],plan_payments:[],notes:$('#notes').value,previous_owners:[],current_owners:[],subsequent_owners:[],previous_directors:[],current_directors:[],subsequent_directors:[],proposed_owners:[],proposed_directors:[]};

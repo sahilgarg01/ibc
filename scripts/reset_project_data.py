@@ -10,7 +10,7 @@ from backend.db import ROOT, connection
 DATA = Path(os.environ.get('IBC_DATA_DIR', ROOT / 'data')).resolve()
 TABLES = (
     'audit', 'case_details', 'claims', 'document_categories', 'document_fingerprints',
-    'document_identifiers', 'document_matches', 'documents', 'entities', 'import_files',
+    'document_identifiers', 'document_matches', 'document_source_evidence', 'documents', 'entities', 'import_files',
     'import_jobs', 'order_categories', 'people', 'plans', 'source_filters',
     'source_order_filters', 'source_orders', 'source_page_failures', 'source_pages',
 )
