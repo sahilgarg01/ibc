@@ -89,7 +89,7 @@ def crawl(request, ingest, progress):
                 extraction = extract_pdf(content)
                 decision = final_decision(extraction)
                 if decision is None:
-                    reason = 'Codex CLI did not identify an operative final order; review the original PDF'
+                    reason = 'Codex SDK did not identify an operative final order; review the original PDF'
                     result['review_required'] += 1
                     result['review_items'].append({'url':url,'subject':subjects.get(url,''),'reason':reason})
                     progress(result)

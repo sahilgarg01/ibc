@@ -280,7 +280,7 @@ class AutomaticOrders:
                         extraction=json.loads(stored_pdf['extraction']) if stored_pdf else extract_pdf(pdf)
                         decision=final_decision(extraction)
                         if decision is None:
-                            reason='Codex CLI did not identify an operative final order; review the original PDF'
+                            reason='Codex SDK did not identify an operative final order; review the original PDF'
                             with self.connect() as db:
                                 db.execute("UPDATE source_orders SET pdf_status='review_required',pdf_error=? WHERE id=?",
                                            (f'{SCREENING_VERSION}: {reason}',order['id']))

@@ -11,7 +11,9 @@ async function api(url, options={}) {
   try { data = await response.json(); } catch { data = {detail: response.statusText}; }
   if (!response.ok) {
     const detail = Array.isArray(data.detail) ? data.detail.map(x => x.msg).join('; ') : data.detail;
-    throw new Error(detail || `Request failed (${response.status})`);
+    const error = new Error(detail || `Request failed (${response.status})`);
+    error.data = data; error.status = response.status;
+    throw error;
   }
   return data;
 }
@@ -20,9 +22,13 @@ function message(value, isError=false) {
   clearTimeout(message.timer); message.timer = setTimeout(() => box.hidden = true, 6500);
 }
 function setBusy(button, busy) { if (button) button.disabled = busy; }
+function setUploadBusy(busy) {
+  $$('#upload-form input, #upload-form select, #upload-form button').forEach(control=>control.disabled=busy);
+  $('#add-document').disabled=busy;
+}
 async function showExplorer() { hideImportScreen(); $('#explorer').hidden=false; $('#catalogue').hidden=true; $('#detail').hidden=true; $('#nav-cases').classList.add('active'); $('#nav-orders').classList.remove('active'); history.replaceState({},'', '/'); await refresh(); }
 async function showCatalogue() { hideImportScreen(); $('#explorer').hidden=true; $('#catalogue').hidden=false; $('#detail').hidden=true; $('#nav-cases').classList.remove('active'); $('#nav-orders').classList.add('active'); history.replaceState({},'', '/#orders'); await refreshOrders(); }
-function showUpload() { $('#upload-dialog').showModal(); }
+function showUpload() { $('#upload-status').textContent=''; $('#upload-dialog').showModal(); }
 
 async function refresh() {
   try {
@@ -191,7 +197,7 @@ function renderDetail() { hideImportScreen();
     <label>Outcome<select id="outcome">${['unknown','ongoing','resolution_approved','liquidation_ordered','liquidation_completed'].map(x=>`<option value="${x}" ${x===r.outcome?'selected':''}>${esc(label(x))}</option>`).join('')}</select></label></div></section>
     <section class="panel"><div class="panel-heading"><div><h2>Claims and recovery</h2><p>Rupees. Enter matched admitted and planned amounts for a plan haircut.</p></div><button class="secondary" id="add-claim">＋ Add claim</button></div>${claimSummary}<div class="review-fields" id="claims">${r.claims.map(x=>claimCard(x,docs)).join('')}</div></section>
     <section class="panel"><div class="panel-heading"><div><h2>Ownership and directors</h2><p>Explicit names from PDFs are filled automatically with their source page. Verify each role before approval; a resolution applicant is not automatically an owner.</p></div></div><div class="review-fields">${[['previous_owners','Previous owners'],['current_owners','Current owners / shareholders'],['subsequent_owners','Subsequent owners'],['previous_directors','Previous directors'],['current_directors','Current directors'],['subsequent_directors','Subsequent directors']].map(([key,title])=>`<div class="ownership-group" data-key="${key}"><strong>${title}</strong><div class="ownership-items">${(r[key]||[]).map(x=>ownerRow(key,x,docs)).join('')}</div><button class="text-button add-owner" data-key="${key}">＋ Add name</button></div>`).join('')}</div></section>
-    <section class="panel"><div class="panel-heading"><h2>Review notes</h2></div><div class="notes"><textarea id="notes">${esc(r.notes)}</textarea></div><div class="actions"><button class="secondary" id="refill-fields" ${c.review_status==='approved'?'disabled':''}>Extract again with Codex CLI</button><button class="primary" id="save">Save draft</button><span id="save-state" class="section-caption">Version ${esc(c.version)}</span></div><div class="approval"><h3>Approve for analytics</h3><label>Reviewer name<input id="reviewer" value="${esc(c.reviewed_by)}" placeholder="Your name"></label><label class="check-label"><input id="confirmed" type="checkbox">I checked the values and source pages.</label><button class="secondary" id="approve">Approve record →</button></div></section>
+    <section class="panel"><div class="panel-heading"><h2>Review notes</h2></div><div class="notes"><textarea id="notes">${esc(r.notes)}</textarea></div><div class="actions"><button class="secondary" id="refill-fields" ${c.review_status==='approved'?'disabled':''}>Extract again with Codex SDK</button><button class="primary" id="save">Save draft</button><span id="save-state" class="section-caption">Version ${esc(c.version)}</span></div><div class="approval"><h3>Approve for analytics</h3><label>Reviewer name<input id="reviewer" value="${esc(c.reviewed_by)}" placeholder="Your name"></label><label class="check-label"><input id="confirmed" type="checkbox">I checked the values and source pages.</label><button class="secondary" id="approve">Approve record →</button></div></section>
     </div><div class="evidence-panel"><section class="panel"><div class="panel-heading"><div><h2>Source evidence</h2><p>Read the exact page before approving a value.</p></div></div><div class="evidence-controls"><select id="document-select">${docOptions(docs,state.activeDoc)}</select><button class="secondary" id="prev-page">←</button><span id="page-count"></span><button class="secondary" id="next-page">→</button><a id="view-pdf" target="_blank" rel="noopener">Open PDF ↗</a><a id="source-link" target="_blank" rel="noopener">Official source ↗</a></div><pre class="page-text" id="page-text"></pre><div class="notes" id="pdf-warning"></div></section><section class="panel"><div class="panel-heading"><div><h2>Record metrics</h2><p>Provisional until approved.</p></div></div><div class="review-fields"><strong>${c.metrics.plan_haircut_percent == null?'Not calculable':`${esc(c.metrics.plan_haircut_percent)}%`}</strong><p>${c.metrics.basis==='plan_total'?'Single plan total':`${esc(c.metrics.matched_rows)} of ${esc(c.metrics.total_rows)} claim rows matched`} · ₹${fmt(c.metrics.matched_admitted_inr)} admitted · ₹${fmt(c.metrics.matched_plan_inr)} planned</p><p>Formula: (admitted − planned) ÷ admitted. Actual payment is separate.</p></div></section></div></div>`;
   $('#back').onclick = showExplorer;
   $('#view-pdf').insertAdjacentHTML('afterend','<a id="download-pdf" class="pdf-download-button" download>Download PDF</a>');
@@ -206,7 +212,7 @@ function renderDetail() { hideImportScreen();
   $('.review-fields',ownershipPanel).innerHTML=ownershipFields.map(([key,title])=>`<div class="ownership-group" data-key="${key}"><strong>${title}</strong><div class="ownership-items">${(r[key]||[]).map(x=>ownerRow(key,x,docs)).join('')}</div>${!(r[key]||[]).length?(emptyFieldStatus(key,docs)||'<p class="extraction-empty">No named '+esc(title.toLowerCase())+' found in the extracted evidence.</p>'):''}<button class="text-button add-owner" data-key="${key}">+ Add name</button></div>`).join('');
   $('p',ownershipPanel).textContent='Named roles retain their source pages. Proposed appointments and share allotments are shown separately from confirmed ownership and directorship.';
   const missing=[...new Set(docs.flatMap(doc=>doc.extraction?.case_facts?.missing_fields||[]))].filter(field=>!r[field]||(Array.isArray(r[field])&&!r[field].length)||r[field]==='unknown');
-  if(missing.length && !docs.some(doc=>doc.extraction?.case_facts?.field_review)) $('.warning',$('#detail')).insertAdjacentHTML('afterend',`<details class="extraction-coverage"><summary>${missing.length} fields need source evidence or manual review</summary><p>Codex CLI did not return these fields. Check the original PDF before entering a value.</p><p>${missing.map(field=>esc(field.replaceAll('_',' '))).join(' · ')}</p></details>`);
+  if(missing.length && !docs.some(doc=>doc.extraction?.case_facts?.field_review)) $('.warning',$('#detail')).insertAdjacentHTML('afterend',`<details class="extraction-coverage"><summary>${missing.length} fields need source evidence or manual review</summary><p>Codex SDK did not return these fields. Check the original PDF before entering a value.</p><p>${missing.map(field=>esc(field.replaceAll('_',' '))).join(' · ')}</p></details>`);
   const reviewedFields=[...new Set(docs.flatMap(doc=>Object.keys(doc.extraction?.case_facts?.field_review||{})))];
   $('.warning',$('#detail')).insertAdjacentHTML('afterend',extractedSchedules(docs));
   if(reviewedFields.length){
@@ -336,7 +342,7 @@ async function refillFields(){
     const result=await api(`/api/documents/${encodeURIComponent(docId)}/extract-facts`,{method:'POST'});
     state.detail=await api(`/api/cases/${result.case_id}`);
     renderDetail();
-    message(result.evidence_count?`Codex CLI response saved. ${result.evidence_count} supporting excerpts found; fields loaded from the database.`:'No supported facts were found in this PDF.');
+    message(result.evidence_count?`Codex SDK response saved. ${result.evidence_count} supporting excerpts found; fields loaded from the database.`:'No supported facts were found in this PDF.');
   }catch(error){message(error.message,true);setBusy(button,false);}
 }
 async function importSample() {const button=$('#import-sample');setBusy(button,true);try{const result=await api('/api/sample/import',{method:'POST'});await openCase(result.case_id);message(result.duplicate?'Sample already loaded.':'Official sample loaded as a draft.');}catch(error){message(error.message,true);}finally{setBusy(button,false);}}
@@ -351,7 +357,42 @@ function showDuplicateDialog(result, uploadedFile) {
   $('#review-duplicate').onclick=async()=>{dialog.close();await openCase(result.case_id);};
   dialog.showModal();
 }
-async function upload(event) {event.preventDefault();const button=$('#upload-form button[type="submit"]');setBusy(button,true);try{const form=new FormData(event.target);const uploadedFile=form.get('file');const result=await api('/api/documents',{method:'POST',body:form});$('#upload-dialog').close();event.target.reset();if(result.duplicate){showDuplicateDialog(result,uploadedFile);return;}await openCase(result.case_id);const doc=state.detail?.documents.find(d=>d.id===result.document_id);const evidence=doc?.extraction?.case_facts?.evidence?.length||0;message(evidence?`Codex CLI response saved. Fields loaded from the database with ${evidence} supporting excerpts; review before approval.`:'PDF uploaded, but no supported case facts were found. Review the PDF for fields this form needs.');}catch(error){message(error.message,true);}finally{setBusy(button,false);}}
+async function upload(event) {
+  event.preventDefault();
+  const form=new FormData(event.target), uploadedFile=form.get('file');
+  pendingUploadLabel=`File upload: ${uploadedFile.name}`;
+  importHistoryPage=1; selectedImport=null;
+  $('#import-job-detail').hidden=true;
+  setUploadBusy(true);
+  $('#upload-status').textContent='Uploading and extracting the document...';
+  const request=api('/api/documents',{method:'POST',body:form}).then(result=>({result}),error=>({error}));
+  $('#upload-dialog').close(); event.target.reset();
+  try {
+    await showImportScreen();
+    focusImportTask();
+    message(`${uploadedFile.name} is uploading and being extracted. Its task will appear in the table below.`);
+    const outcome=await request;
+    if(outcome.error)throw outcome.error;
+    const result=outcome.result;
+    pendingUploadLabel=null; importHistoryPage=1;
+    await refreshImportHistory();
+    await selectImport(result.import_job_id,{focus:'task'});
+    if(result.duplicate){
+      showDuplicateDialog(result,uploadedFile);
+      message('This PDF was already stored. The upload attempt is highlighted in Document imports.');
+      return;
+    }
+    message('PDF uploaded successfully. Its task is highlighted in the table; use View files to review the extracted fields.');
+  } catch(error) {
+    pendingUploadLabel=null;
+    message(error.message,true);
+    if(error.data?.import_job_id){
+      importHistoryPage=1;
+      await refreshImportHistory();
+      await selectImport(error.data.import_job_id,{focus:'task'});
+    }
+  } finally { setUploadBusy(false); }
+}
 async function refreshOrders() {
   try {
     const filters=new FormData($('#order-filters'));
@@ -421,7 +462,7 @@ const pageLimit=$('#import-form input[name="max_pages"]');
 pageLimit.required=false;pageLimit.removeAttribute('max');pageLimit.value='';pageLimit.placeholder='Blank = all listing pages';
 pageLimit.parentElement.insertAdjacentHTML('beforeend','<small>Leave blank to follow pagination until the PDF file limit is reached.</small>');
 
-let importHistoryPage=1, selectedImport=null, jobFilesPage=1, importHistoryTimer;
+let importHistoryPage=1, selectedImport=null, jobFilesPage=1, importHistoryTimer, pendingUploadLabel=null;
 function hideImportScreen(){clearTimeout(importHistoryTimer);$('#import-screen').hidden=true;$('#nav-import').classList.remove('active');}
 function createdTime(value){if(!value)return 'Not recorded';const date=new Date(value);return Number.isNaN(date.getTime())?'Not recorded':date.toLocaleString(undefined,{dateStyle:'medium',timeStyle:'medium'});}
 async function showImportScreen(){['explorer','catalogue','detail'].forEach(id=>$('#'+id).hidden=true);['nav-cases','nav-orders'].forEach(id=>$('#'+id).classList.remove('active'));$('#import-screen').hidden=false;$('#nav-import').classList.add('active');history.replaceState({},'', '/#imports');await refreshImportHistory();}
@@ -432,13 +473,29 @@ async function refreshImportHistory(){
     const result=await api(`/api/import-history?page=${importHistoryPage}`);
     $('#import-job-list').innerHTML=result.items.map(j=>`<tr data-job="${esc(j.id)}" tabindex="0" title="Double-click to view files"><td>${esc(j.url)}</td><td>${esc((j.subjects||[]).join(' · ')||'Not extracted yet')}</td><td>${esc(createdTime(j.created_at))}</td><td><span class="badge">${esc(j.status)}</span></td><td>${j.pages}</td><td>${j.discovered}</td><td>${j.imported}</td><td>${j.duplicates}</td><td>${j.skipped||0}</td><td>${j.review_required||0}</td><td>${j.failed}</td><td>${j.errors}</td><td><button class="text-button open-import-job" data-job="${esc(j.id)}">View files</button></td></tr>`).join('');
     $('#imports-empty').hidden=result.total!==0;$('#imports-page').textContent=`Page ${importHistoryPage} of ${Math.max(1,Math.ceil(result.total/result.page_size))} · ${result.total} tasks`;$('#imports-prev').disabled=importHistoryPage===1;$('#imports-next').disabled=importHistoryPage*result.page_size>=result.total;
-    $$('#import-job-list tr').forEach(row=>{row.ondblclick=()=>selectImport(row.dataset.job);row.onkeydown=e=>{if(e.target===row&&e.key==='Enter')selectImport(row.dataset.job);};});
-    $$('.open-import-job').forEach(b=>b.onclick=()=>selectImport(b.dataset.job));
+    $$('#import-job-list tr').forEach(row=>{row.classList.toggle('selected',row.dataset.job===selectedImport);row.onclick=()=>selectImport(row.dataset.job);row.onkeydown=e=>{if(e.target===row&&e.key==='Enter')selectImport(row.dataset.job);};});
+    $$('.open-import-job').forEach(b=>b.onclick=e=>{e.stopPropagation();selectImport(b.dataset.job);});
+    const pending=pendingUploadLabel&&result.items.find(job=>job.url===pendingUploadLabel&&['queued','running'].includes(job.status));
+    if(pending&&pending.id!==selectedImport)await selectImport(pending.id,{focus:'task'});
     if(selectedImport)await refreshJobFiles();
   }catch(e){message(e.message,true);}
   if(!$('#import-screen').hidden)importHistoryTimer=setTimeout(refreshImportHistory,3000);
 }
-async function selectImport(id){selectedImport=id;jobFilesPage=1;$('#import-job-detail').hidden=false;setImportDetailExpanded(true);await refreshJobFiles();$('#import-job-detail').scrollIntoView({behavior:'smooth',block:'start'});}
+function focusImportTask(id=null){
+  const row=id&&$$('#import-job-list tr').find(item=>item.dataset.job===id);
+  const target=row||$('#import-history-panel');
+  if(row)row.focus({preventScroll:true});
+  target.scrollIntoView({behavior:'smooth',block:row?'center':'start'});
+}
+async function selectImport(id,{focus='details'}={}){
+  selectedImport=id; jobFilesPage=1;
+  $$('#import-job-list tr').forEach(row=>row.classList.toggle('selected',row.dataset.job===id));
+  $('#import-job-detail').hidden=false;
+  setImportDetailExpanded(true);
+  if(focus==='task')focusImportTask(id);
+  await refreshJobFiles();
+  if(id===selectedImport&&focus==='details')$('#import-job-detail').scrollIntoView({behavior:'smooth',block:'start'});
+}
 function setImportDetailExpanded(expanded){
   $('#import-job-detail-content').hidden=!expanded;
   const toggle=$('#import-detail-toggle');
@@ -475,7 +532,7 @@ function duplicateCell(file){
 }
 async function showFileContent(id){try{message('Reading document content. Scanned pages may take a few seconds for OCR.');const doc=await api(`/api/documents/${id}/content`);let dialog=$('#content-dialog');if(!dialog){document.body.insertAdjacentHTML('beforeend','<dialog id="content-dialog"><button class="secondary" id="close-content">Close</button><h2 id="content-title"></h2><p id="content-warning"></p><pre id="content-text" class="page-text"></pre></dialog>');dialog=$('#content-dialog');$('#close-content').onclick=()=>dialog.close();}$('#content-title').textContent=doc.subject||doc.filename;$('#content-warning').textContent=doc.warnings.join(' ');$('#content-text').textContent=doc.pages.map(p=>`Page ${p.page}\n${p.text||'[No extractable text]'}`).join('\n\n');dialog.showModal();}catch(e){message(e.message,true);}}
 
-let currentSchedule=null;
+let currentSchedule=null, syncStartPending=false;
 async function refreshScheduler(){
   currentSchedule=await api('/api/scheduler');
   const select=$('#sync-category');
@@ -484,7 +541,7 @@ async function refreshScheduler(){
     select.value=currentSchedule.category||'all';select.dataset.initialized='true';
   }
   $('#toggle-scheduler').textContent=currentSchedule.enabled?'Disable scheduler':'Enable scheduler';
-  $('#sync-now').disabled=currentSchedule.running;
+  $('#sync-now').disabled=currentSchedule.running||syncStartPending;
   $('#scheduler-status').textContent=`${currentSchedule.enabled?'Scheduled collection enabled':'Scheduled collection disabled'} · ${currentSchedule.running?'Sync running':'Idle'} · Next run: ${currentSchedule.enabled&&currentSchedule.next_run?createdTime(currentSchedule.next_run):'—'}`;
   if(document.activeElement!==$('#schedule-interval'))$('#schedule-interval').value=currentSchedule.interval_minutes;
   $('#scheduler-sources').innerHTML=currentSchedule.sources.map(s=>`<tr><td>${esc(s.category.toUpperCase())}</td><td>${esc(createdTime(s.created_at))}</td><td>${esc(s.last_sync?createdTime(s.last_sync):'Not synced yet')}</td><td>${esc(s.status)}</td><td>${esc(s.next_page)}</td><td>${esc(s.error||'')}</td></tr>`).join('');
@@ -492,6 +549,33 @@ async function refreshScheduler(){
 async function saveScheduler(enabled){try{const interval=Number($('#schedule-interval').value);await api('/api/scheduler',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({enabled,interval_minutes:interval,category:$('#sync-category').value})});await refreshScheduler();message(enabled?'Scheduler enabled. The first run collects historical orders; later runs skip stored orders.':'Scheduler disabled. A currently running sync will finish.');}catch(e){message(e.message,true);}}
 $('#toggle-scheduler').onclick=()=>saveScheduler(!currentSchedule?.enabled);
 $('#save-schedule').onclick=()=>saveScheduler(Boolean(currentSchedule?.enabled));
-$('#sync-now').onclick=async()=>{try{const job=await api(`/api/scheduler/sync?category=${encodeURIComponent($('#sync-category').value)}`,{method:'POST'});importHistoryPage=1;await refreshImportHistory();await selectImport(job.id);}catch(e){message(e.message,true);}};
+function confirmSync(categoryLabel){
+  const dialog=$('#sync-confirm-dialog');
+  $('#sync-confirm-category').textContent=categoryLabel;
+  dialog.returnValue='no';
+  return new Promise(resolve=>{
+    dialog.addEventListener('close',()=>resolve(dialog.returnValue==='yes'),{once:true});
+    dialog.showModal();
+  });
+}
+async function syncNow(){
+  if(syncStartPending||currentSchedule?.running)return;
+  syncStartPending=true;
+  $('#sync-now').disabled=true;
+  const select=$('#sync-category'), category=select.value;
+  const categoryLabel=select.selectedOptions[0]?.textContent||category;
+  try {
+    if(!await confirmSync(categoryLabel))return;
+    const job=await api(`/api/scheduler/sync?category=${encodeURIComponent(category)}`,{method:'POST'});
+    importHistoryPage=1;
+    await refreshImportHistory();
+    await selectImport(job.id);
+  } catch(error) { message(error.message,true); }
+  finally {
+    syncStartPending=false;
+    $('#sync-now').disabled=Boolean(currentSchedule?.running);
+  }
+}
+$('#sync-now').onclick=syncNow;
 
 

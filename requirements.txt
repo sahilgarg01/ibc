@@ -7,7 +7,9 @@ psycopg[binary]>=3.2,<4
 python-dotenv>=1,<2
 pytest>=8,<10
 
-# PDF tools used by Codex CLI while inspecting the uploaded file.
+# PDF tools used by Codex SDK while inspecting the uploaded file.
 pypdf>=5,<7
 pypdfium2>=5.9,<6
 Pillow>=10,<13
+
+openai-codex>=0.163,<0.164

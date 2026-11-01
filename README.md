@@ -6,16 +6,15 @@ The **IBBI order catalogue** shows public order listings and imported PDF files 
 
 ## Run locally
 
-Install Codex CLI and authenticate with `codex login` under the same operating-system account that runs this backend. The ignored `.env` file contains the local configuration:
+The backend uses the official Python package `openai-codex`. It is included in `requirements.txt`; its runtime is managed by the SDK. Your existing Codex account login must be available to the operating-system account running the backend. The ignored `.env` contains:
 
 ```dotenv
 DATABASE_URL=postgresql://user:password@localhost:5432/ibc
-CODEX_CLI_PATH=codex
-CODEX_MODEL=
+CODEX_MODEL=gpt-6.1-sol
 CODEX_TIMEOUT_SECONDS=600
 ```
 
-`CODEX_CLI_PATH` is the native executable name or absolute path. On Windows, use `codex.exe`; if PATH resolves to a `.cmd` wrapper, set the full path to the native executable instead. `CODEX_MODEL` is optional and defaults to your CLI configuration. This application no longer calls the OpenAI API directly or requires `OPENAI_API_KEY`.
+`CODEX_MODEL` is optional; an empty value uses the SDK runtime's configured default. `CODEX_TIMEOUT_SECONDS` limits each extraction. A separate executable path is no longer configured by this application.
 
 PostgreSQL is used when `DATABASE_URL` is set; otherwise the app uses SQLite. Install requirements in the backend environment; `pypdf` and `pypdfium2` are PDF tools Codex can use while reading the file, rather than application extraction rules.
 
@@ -24,11 +23,11 @@ PostgreSQL is used when `DATABASE_URL` is set; otherwise the app uses SQLite. In
 .\.venv\Scripts\python.exe -m uvicorn backend.main:app --reload --host 127.0.0.1 --port 8000
 ```
 
-Open http://127.0.0.1:8000 and upload a PDF. The backend creates a temporary folder containing the original PDF and the form JSON schema, then runs `codex exec --output-schema schema.json --output-last-message result.json` there. Codex reads the PDF path using local tools and returns JSON. The CLI has no PDF attachment flag. Its JSON response is validated and saved with the case fields and PDF in the database. The form then loads those saved fields through `GET /api/cases/{id}`. Opening a case or viewing saved content never calls Codex CLI. Uploads are limited to 15 MB; import downloads are limited to 50 MB. Documents must have at most 250 physical pages.
+Open http://127.0.0.1:8000 and upload a PDF. The backend writes the PDF to a temporary workspace, starts an SDK thread with `AsyncCodex`, and passes the form structure through `thread.run(..., output_schema=response_schema())`. The returned `final_response` JSON is validated and saved with the PDF and case fields. The form loads those fields from `GET /api/cases/{id}`. Opening a case or source evidence never calls the SDK. Manual uploads are limited to 15 MB; PDFs must contain at most 250 pages.
 
-Missing fields remain empty. Extraction failures save no partial case. Existing documents and saved records remain available. **Extract again with Codex CLI** explicitly processes a stored draft PDF again; entered fields retain precedence, while an untouched single-document draft can be refreshed. Duplicate uploads reuse the existing record without another CLI extraction. The sample import also uses Codex CLI.
+Missing fields remain empty. Extraction failures save no partial case. Existing documents and saved records remain available. **Extract again with Codex SDK** explicitly processes a stored draft PDF again; entered fields retain precedence, while an untouched single-document draft can be refreshed. Duplicate uploads reuse the existing record without another SDK extraction. The sample import also uses Codex SDK.
 
-Run tests with `.\.venv\Scripts\python.exe -m pytest -q`. Tests mock the Codex CLI process and use isolated SQLite databases.
+Run tests with `.\.venv\Scripts\python.exe -m pytest -q`. Tests mock the SDK client and use isolated SQLite databases.
 
 ## Import the public IBBI order catalogue
 
@@ -56,7 +55,7 @@ Run these from the project root in a **separate terminal** while the app is runn
 
 `sync` reads the public GET form and every pagination page. It records the page number, fetch time, date, subject, remark, bench when a bench filter was used, and the official PDF URL. It detects duplicate PDF URLs and checkpoints each page. Failed listing pages remain visible in `status` and are retried on the next run. Use `--refresh` to revisit older pages after the site changes, or `--max-pages 5` for a short test. `sync-pdfs` stores normalized PDFs and their hashes, bytes and download status. It records download errors instead of silently treating them as complete. `follow-pdfs` is available for a long-running PDF queue after you start the listing sync. Check `status` and the logs before claiming the collection is complete.
 
-Automatic IBBI collection is controlled from **Document imports**. PDFs are sent to Codex CLI for fields and outcome classification. Imports from the official order catalogue require a supported final outcome; other orders remain available for source review. Listing metadata alone does not fill case facts. Codex CLI failures are recorded for retry. Existing imported documents and saved records are retained. PDFs exceeding the 50 MB sync/download cap are recorded as failures; manual uploads retain their 15 MB limit. Extracted cases remain drafts until reviewed.
+Automatic IBBI collection is controlled from **Document imports**. PDFs are sent to Codex SDK for fields and outcome classification. Imports from the official order catalogue require a supported final outcome; other orders remain available for source review. Listing metadata alone does not fill case facts. Codex SDK failures are recorded for retry. Existing imported documents and saved records are retained. PDFs exceeding the 50 MB sync/download cap are recorded as failures; manual uploads retain their 15 MB limit. Extracted cases remain drafts until reviewed.
 
 ## Official sample
 
@@ -80,6 +79,6 @@ The **Research analytics** panel defaults to the last 10 years of dated, approve
 
 To verify real final orders through both import methods without changing application data, run `.\.venv\Scripts\python.exe -m scripts.verify_final_imports`. This downloads two public PDFs into memory and verifies resolution/liquidation review drafts in disposable SQLite databases.
 
-Codex CLI extraction uses a temporary workspace with the workspace-write sandbox and no interactive approval prompts. The PDF, schema, intermediate files and CLI output are cleaned up after each run. Successful JSON is retained in `documents.extraction.response`; validated fields are stored in `cases.record` and projected into the structured tables. Failed, timed-out, unreadable or invalid results do not create a partial case.
+The SDK uses a temporary workspace with the workspace-write sandbox and automatic approval denied. The PDF and intermediate files are cleaned up after each run, and the SDK client is closed on success, failure or timeout. Successful JSON is retained in `documents.extraction.response`; validated fields are stored in `cases.record` and projected into the structured tables. Failed, timed-out, unreadable or invalid results do not create a partial case.
 
-If the CLI cannot find its home directory or login, set a valid `CODEX_HOME` for the backend account and run `codex login` there before starting the server. The backend does not create or modify your Codex authentication configuration.
+The SDK uses the local Codex account session and manages its bundled runtime. If the runtime cannot find its home or login, configure `CODEX_HOME` for the backend account. The application does not modify your authentication settings. Official SDK documentation: https://learn.chatgpt.com/docs/codex-sdk.

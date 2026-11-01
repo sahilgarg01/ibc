@@ -54,14 +54,30 @@ def test_upload_rejects_non_pdf_and_reuses_document(tmp_path):
     with TestClient(create_app(tmp_path)) as client:
         bad = client.post('/api/documents', files={'file':('bad.pdf',b'not a pdf','application/pdf')})
         assert bad.status_code == 422
+        assert bad.json()['import_job_id']
+        failed_job = client.get('/api/imports/' + bad.json()['import_job_id']).json()
+        assert failed_job['url'] == 'File upload: bad.pdf'
+        assert failed_job['status'] == 'failed'
+        assert failed_job['result']['failed'] == 1
+        assert failed_job['result']['errors'][0]['error'] == 'Upload a valid PDF'
         pdf = (ROOT / 'samples/indo-global-resolution-order.pdf').read_bytes()
         first = client.post('/api/documents',files={'file':('sample.pdf',pdf,'application/pdf')})
         assert first.status_code == 200, first.text
+        first_job = client.get('/api/imports/' + first.json()['import_job_id']).json()
+        assert first_job['status'] == 'completed'
+        assert first_job['result']['imported'] == 1
+        assert client.get('/api/import-files?job_id=' + first_job['id']).json()['total'] == 1
         duplicate = client.post('/api/documents',files={'file':('same.pdf',pdf,'application/pdf')}).json()
         assert duplicate['duplicate'] is True
         assert duplicate['document_id'] == first.json()['document_id']
         assert duplicate['original']['filename'] == 'sample.pdf'
         assert duplicate['original']['sha256']
+        duplicate_job = client.get('/api/imports/' + duplicate['import_job_id']).json()
+        assert duplicate_job['status'] == 'completed'
+        assert duplicate_job['result']['duplicates'] == 1
+        history = client.get('/api/import-history').json()
+        assert history['total'] == 3
+        assert [item['status'] for item in history['items']] == ['completed', 'completed', 'failed']
         case_id=first.json()['case_id']
         doc_id=first.json()['document_id']
         case=client.get(f'/api/cases/{case_id}').json()

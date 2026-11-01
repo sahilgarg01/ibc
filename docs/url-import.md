@@ -20,7 +20,7 @@ Existing evidence JSON and audit history remain intact. `case_details` has one r
 
 One PDF does not always equal one legal case. Unknown imported PDFs start as separate drafts. Use the existing Add document case selector to attach additional documents to a known case. Case identity and document-to-case grouping require review; CIN identifies a company, not a unique proceeding. There is no automatic case merge.
 
-Imports send the original PDF to Codex CLI and save validated fields and supporting excerpts to the database. The form loads those saved values. Review the original PDF before approval; unknown financial values remain null.
+Imports send the original PDF to Codex SDK and save validated fields and supporting excerpts to the database. The form loads those saved values. Review the original PDF before approval; unknown financial values remain null.
 
 ## Matching and analytics
 

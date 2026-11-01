@@ -13,9 +13,10 @@ from pathlib import Path
 from uuid import uuid4
 from urllib.parse import unquote, urlsplit
 
-from fastapi import FastAPI, File, Form, HTTPException, Query, UploadFile
+from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.responses import FileResponse, Response, JSONResponse
 from fastapi.staticfiles import StaticFiles
+from starlette.concurrency import run_in_threadpool
 
 from .db import connection, decode, initialize
 from .codex_extraction import extract_pdf, record_for_document, fill_missing, final_decision as classify_final_order
@@ -136,7 +137,7 @@ def create_app(data_dir: Path | None = None):
                 validate_evidence(db, case_id, CaseRecord.model_validate(record if new_case or existing_case['review_status']=='draft' else existing_case['record']))
                 project(db, case_id, record if new_case or existing_case['review_status']=='draft' else existing_case['record'])
                 fingerprint(db, doc_id, filename, extraction, now())
-                audit(db, case_id, "document_added", {"document_id": doc_id, "sha256": digest, "provider": "codex_cli"})
+                audit(db, case_id, "document_added", {"document_id": doc_id, "sha256": digest, "provider": "codex_sdk"})
         except (sqlite3.IntegrityError, psycopg.errors.UniqueViolation):
             path.unlink(missing_ok=True)
             with db_connection() as db:
@@ -412,23 +413,79 @@ def create_app(data_dir: Path | None = None):
         return FileResponse(path, media_type="application/pdf")
 
     @app.post("/api/documents")
-    def upload(file: UploadFile = File(...), source_url: str = Form(""), case_id: str = Form(""), order_kind: str = Form('unknown')):
-        if order_kind not in {*DEFAULT_CATEGORIES,'unknown'}:
-            raise HTTPException(422,'Unknown court/authority category')
-        if source_url and (len(source_url) > 2000 or not source_url.startswith(("https://", "http://"))):
-            raise HTTPException(422, "Source URL must use http or https")
-        content = file.file.read(MAX_UPLOAD + 1)
-        result = ingest(content, Path((file.filename or "document.pdf").replace("\\", "/")).name,
-                      source_url or None, case_id or None)
-        if order_kind!='unknown' and not result['duplicate']:
+    async def upload(request: Request):
+        job_id = uuid4().hex
+        filename = "document.pdf"
+        job_label = "File upload"
+
+        def save_job(status, result):
+            stamp = now()
             with db_connection() as db:
-                set_document_category(db,result['document_id'],order_kind)
-        if result['duplicate']:
-            with db_connection() as db:
-                original = db.execute('''SELECT filename,subject,source_url,created_at,order_kind,sha256
-                    FROM documents WHERE id=?''',(result['document_id'],)).fetchone()
-            result['original'] = dict(original)
-        return result
+                existing = db.execute("SELECT id FROM import_jobs WHERE id=?", (job_id,)).fetchone()
+                if existing:
+                    db.execute("UPDATE import_jobs SET url=?,status=?,result=?,updated_at=? WHERE id=?",
+                               (job_label, status, json.dumps(result), stamp, job_id))
+                else:
+                    db.execute("INSERT INTO import_jobs VALUES(?,?,?,?,?,?)",
+                               (job_id, job_label, status, stamp, stamp, json.dumps(result)))
+                persist_import_files(db, job_id, result, stamp)
+
+        def failed_upload(exc):
+            if isinstance(exc, HTTPException):
+                status_code, detail = exc.status_code, str(exc.detail)
+            else:
+                logging.exception("File upload job %s failed", job_id)
+                status_code, detail = 500, "Upload failed unexpectedly. Check the server logs and retry."
+            result = {"kind": "file_upload", "filename": filename, "pages": 0,
+                      "discovered": 1, "imported": 0, "duplicates": 0,
+                      "skipped": 0, "review_required": 0, "failed": 1,
+                      "errors": [{"url": filename, "error": detail}], "error": detail,
+                      "items": []}
+            save_job("failed", result)
+            return JSONResponse(status_code=status_code,
+                                content={"detail": detail, "import_job_id": job_id})
+
+        try:
+            form = await request.form()
+            file = form.get("file")
+            if file is None or not hasattr(file, "file"):
+                raise HTTPException(422, "Select a PDF document to upload")
+            filename = Path((getattr(file, "filename", "") or filename).replace("\\", "/")).name
+            job_label = f"File upload: {filename}"
+            source_url = str(form.get("source_url") or "")
+            case_id = str(form.get("case_id") or "")
+            order_kind = str(form.get("order_kind") or "unknown")
+            save_job("running", {"kind": "file_upload", "filename": filename, "pages": 0,
+                                "discovered": 1, "imported": 0, "duplicates": 0,
+                                "skipped": 0, "review_required": 0, "failed": 0,
+                                "errors": [], "items": []})
+            if order_kind not in {*DEFAULT_CATEGORIES, 'unknown'}:
+                raise HTTPException(422, 'Unknown court/authority category')
+            if source_url and (len(source_url) > 2000 or not source_url.startswith(("https://", "http://"))):
+                raise HTTPException(422, "Source URL must use http or https")
+            content = file.file.read(MAX_UPLOAD + 1)
+            # Extraction uses a synchronous SDK wrapper that owns its event loop.
+            # Keep it in FastAPI's worker pool while this route parses the form asynchronously.
+            result = await run_in_threadpool(ingest, content, filename, source_url or None, case_id or None)
+            if order_kind != 'unknown' and not result['duplicate']:
+                with db_connection() as db:
+                    set_document_category(db, result['document_id'], order_kind)
+            if result['duplicate']:
+                with db_connection() as db:
+                    original = db.execute('''SELECT filename,subject,source_url,created_at,order_kind,sha256
+                        FROM documents WHERE id=?''', (result['document_id'],)).fetchone()
+                result['original'] = dict(original)
+            item_url = source_url or f"upload:///{filename}"
+            job_result = {"kind": "file_upload", "filename": filename, "pages": 0,
+                          "discovered": 1, "imported": int(not result['duplicate']),
+                          "duplicates": int(result['duplicate']), "skipped": 0,
+                          "review_required": 0, "failed": 0, "errors": [],
+                          "items": [{"url": item_url, "document_id": result['document_id'],
+                                     "case_id": result['case_id'], "duplicate": result['duplicate']}]}
+            save_job("completed", job_result)
+            return {**result, "import_job_id": job_id}
+        except Exception as exc:
+            return failed_upload(exc)
 
     @app.get('/api/catalogue')
     def unified_catalogue(page: int = Query(1,ge=1), page_size: int = Query(25,ge=1,le=100),

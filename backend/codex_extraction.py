@@ -1,20 +1,23 @@
-"""Run Codex CLI with a local PDF and JSON schema, then validate its result."""
+"""Extract PDF form fields with the Python Codex SDK and validate its JSON response."""
 from copy import deepcopy
 import json
+import logging
 import os
 
-import shutil
-import subprocess
+import asyncio
 import sys
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from pydantic import ValidationError
 
+from openai_codex import AsyncCodex, CodexConfig, CodexError, Sandbox, ApprovalMode
+from openai_codex.types import TurnStatus
+
 from .models import CaseRecord, StrictModel
 from pydantic import Field
 from typing import Literal
 
-VERSION = "codex-cli-pdf-v2"
+VERSION = "codex-sdk-pdf-v1"
 SCREENING_VERSION = VERSION
 
 FIELD_DESCRIPTIONS = {
@@ -124,16 +127,35 @@ def response_schema():
     return result
 
 
+async def request_fields(workspace, prompt, model, timeout):
+    # The SDK manages its bundled runtime; no executable path or CLI command.
+    client = AsyncCodex(CodexConfig(
+        cwd=str(workspace), env={"DATABASE_URL": "", "OPENAI_API_KEY": ""},
+    ))
+
+    async def run():
+        thread = await client.thread_start(
+            cwd=str(workspace), model=model or None, ephemeral=True,
+            sandbox=Sandbox.workspace_write, approval_mode=ApprovalMode.deny_all,
+        )
+        return await thread.run(prompt, output_schema=response_schema())
+
+    try:
+        result = await asyncio.wait_for(run(), timeout=timeout)
+    finally:
+        await client.close()
+    if result.status != TurnStatus.completed or result.error is not None:
+        raise ValueError(f"Codex SDK extraction ended with status {result.status.value}; no fields were saved")
+    if not result.final_response or not result.final_response.strip():
+        raise ValueError("Codex SDK finished without a JSON response; no fields were saved")
+    return result.final_response
+
+
 def extract_pdf(content):
     if not content.startswith(b"%PDF-"):
         raise ValueError("Upload a valid PDF file")
     if len(content) > 50 * 1024 * 1024:
         raise ValueError("PDF exceeds the 50 MB limit")
-    executable = shutil.which(os.environ.get("CODEX_CLI_PATH", "codex"))
-    if not executable:
-        raise ValueError("Codex CLI was not found. Install it or set CODEX_CLI_PATH to codex.exe")
-    if Path(executable).suffix.lower() in {".cmd", ".bat"}:
-        raise ValueError("Set CODEX_CLI_PATH to the native codex executable, not a shell wrapper")
     model = os.environ.get("CODEX_MODEL", "").strip()
     try:
         timeout = int(os.environ.get("CODEX_TIMEOUT_SECONDS", "600"))
@@ -143,7 +165,7 @@ def extract_pdf(content):
         raise ValueError("CODEX_TIMEOUT_SECONDS must be a positive integer") from exc
     prompt = (
         "Read document.pdf in your working directory and extract its insolvency case form fields. "
-        "The required output structure is in schema.json and is also passed via --output-schema. "
+        "The required output structure and field descriptions are supplied through the SDK output schema. "
         "Use your local PDF reading tools. Python is available at " + json.dumps(sys.executable) + ". "
         "The pypdf and pypdfium2 packages are available in that Python environment for reading text "
         "and rendering scanned pages for visual inspection. Do not install packages or access websites. "
@@ -157,7 +179,7 @@ def extract_pdf(content):
         "For EVERY record field return a field_review entry: extracted with source excerpts, "
         "not_documented with a specific explanation if absent, or not_applicable with a reason. "
         "All form fields and all nested row properties are required in the response, including "
-        "empty lists and nulls. Use the descriptions in schema.json as the complete form checklist. "
+        "empty lists and nulls. Use the output schema descriptions as the complete form checklist. "
         "Inspect case headings, caption, Coram, narrative, financial tables, valuations, allocations "
         "and ownership/director details, not just the first or last pages. If the PDF contains "
         "attached orders for other companies, keep their facts separate; never use another debtor's "
@@ -177,40 +199,12 @@ def extract_pdf(content):
         with TemporaryDirectory(prefix="ibc-codex-") as directory:
             workspace = Path(directory)
             (workspace / "document.pdf").write_bytes(content)
-            schema_path = workspace / "schema.json"
-            schema_path.write_text(json.dumps(response_schema()), encoding="utf-8")
-            output_path = workspace / "result.json"
-            command = [executable, "--ask-for-approval", "never", "exec",
-                       "--sandbox", "workspace-write", "--skip-git-repo-check", "--ephemeral",
-                       "--cd", str(workspace), "--output-schema", str(schema_path),
-                       "--output-last-message", str(output_path), "--color", "never"]
-            if model:
-                command.extend(["--model", model])
-            command.append("-")
-            environment = os.environ.copy()
-            environment.pop("DATABASE_URL", None)
-            environment.pop("OPENAI_API_KEY", None)
-            with (workspace / "cli.log").open("w", encoding="utf-8") as log:
-                result = subprocess.run(
-                    command, input=prompt, encoding="utf-8", errors="replace",
-                    stdout=subprocess.DEVNULL, stderr=log, cwd=workspace,
-                    env=environment, timeout=timeout, check=False,
-                    creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0,
-                )
-            if result.returncode:
-                error_log = (workspace / "cli.log").read_text(encoding="utf-8", errors="replace")
-                if "Invalid JSON schema" in error_log:
-                    raise ValueError("Codex CLI rejected the response schema; check the server extraction configuration")
-                if "Could not find home directory" in error_log:
-                    raise ValueError("Codex CLI could not find its home directory. Configure CODEX_HOME for the backend account")
-                raise ValueError(f"Codex CLI extraction failed (exit {result.returncode}). Check codex login status and CLI configuration")
-            if not output_path.is_file():
-                raise ValueError("Codex CLI did not return a JSON result; no fields were saved")
-            output = output_path.read_text(encoding="utf-8-sig")
-    except subprocess.TimeoutExpired as exc:
-        raise ValueError("Codex CLI extraction timed out; retry or increase CODEX_TIMEOUT_SECONDS") from exc
-    except OSError as exc:
-        raise ValueError("Codex CLI could not run. Check CODEX_CLI_PATH and file permissions") from exc
+            output = asyncio.run(request_fields(workspace, prompt, model, timeout))
+    except TimeoutError as exc:
+        raise ValueError("Codex SDK extraction timed out; retry or increase CODEX_TIMEOUT_SECONDS") from exc
+    except (CodexError, OSError, RuntimeError) as exc:
+        logging.exception("Codex SDK PDF extraction request failed")
+        raise ValueError("Codex SDK extraction failed. Check SDK installation, authentication and model access") from exc
     try:
         data = json.loads(output)
         if (not isinstance(data, dict) or set(data) != set(response_schema()["properties"])
@@ -220,12 +214,58 @@ def extract_pdf(content):
             raise ValueError("Expected a JSON object")
         if "extraction_error" not in data or data["extraction_error"] is not None:
             raise ValueError("Codex could not read the PDF")
+        normalization_warnings = []
+        claims = data["record"].get("claims")
+        if isinstance(claims, list):
+            categories = list(dict.fromkeys(
+                row.get("category") for row in claims if isinstance(row, dict)
+            ))
+            normalized_claims = []
+            for category in categories:
+                rows = [row for row in claims if isinstance(row, dict) and row.get("category") == category]
+                individual = [row for row in rows if row.get("scope") == "individual"]
+                totals = [row for row in rows if row.get("scope") == "category_total"]
+                if individual:
+                    normalized_claims.extend(individual)
+                    if totals:
+                        normalization_warnings.append(
+                            f"Removed the {category.replace('_', ' ')} category-total claim because individual creditor rows were extracted."
+                        )
+                elif totals:
+                    def completeness(row):
+                        return sum(row.get(field) is not None for field in
+                                   ("claimed", "admitted", "plan_amount", "actual_paid"))
+                    normalized_claims.append(max(totals, key=completeness))
+                    if len(totals) > 1:
+                        normalization_warnings.append(
+                            f"Kept the most complete {category.replace('_', ' ')} category-total claim and removed repeated totals."
+                        )
+                else:
+                    normalized_claims.extend(rows)
+            # A model may repeat the same creditor while reading a continued table.
+            # Keep the row with the most populated monetary fields instead of
+            # rejecting the entire document.
+            deduplicated = {}
+            for row in normalized_claims:
+                key = (str(row.get("category", "")), str(row.get("creditor", "")).casefold().strip())
+                score = sum(row.get(field) is not None for field in
+                            ("claimed", "admitted", "plan_amount", "actual_paid"))
+                current = deduplicated.get(key)
+                if current is None or score > current[0]:
+                    deduplicated[key] = (score, row)
+            if len(deduplicated) < len(normalized_claims):
+                normalization_warnings.append("Removed repeated creditor rows from the extracted claims table.")
+            data["record"]["claims"] = [item[1] for item in deduplicated.values()]
         record = CaseRecord.model_validate(data["record"]).model_dump(mode="json")
         if not isinstance(data["field_review"], dict) or set(data["field_review"]) != set(CaseRecord.model_fields):
             raise ValueError("Review must cover every form field")
         reviews = {field: FieldReview.model_validate(review).model_dump(mode="json")
                    for field, review in data["field_review"].items()}
         for field, review in reviews.items():
+            if field == "notes":
+                # Notes summarize uncertainty and may be generated from several
+                # pages; they are not a sourced case fact.
+                continue
             populated = bool(record[field]) and record[field] != "unknown"
             if (review["status"] == "extracted") != populated:
                 raise ValueError("Field status does not match its value")
@@ -237,10 +277,34 @@ def extract_pdf(content):
         evidence = data["evidence"]
         if not isinstance(evidence, list):
             raise ValueError("Invalid evidence")
+        valid_evidence = []
+        normalized_paths = 0
+        discarded_evidence = 0
         for item in evidence:
-            if (item["field"] not in CaseRecord.model_fields or type(item["page"]) is not int
-                    or not 1 <= item["page"] <= count or not isinstance(item["excerpt"], str)):
-                raise ValueError("Invalid evidence reference")
+            if not isinstance(item, dict):
+                discarded_evidence += 1
+                continue
+            raw_field = item.get("field")
+            field = str(raw_field).split(".", 1)[0].split("[", 1)[0]
+            page = item.get("page")
+            excerpt = item.get("excerpt")
+            if (field not in CaseRecord.model_fields or type(page) is not int
+                    or not 1 <= page <= count or not isinstance(excerpt, str) or not excerpt.strip()):
+                discarded_evidence += 1
+                continue
+            if field != raw_field:
+                normalized_paths += 1
+            valid_evidence.append({"field": field, "page": page, "excerpt": excerpt.strip()})
+        evidence = valid_evidence
+        data["evidence"] = evidence
+        if normalized_paths:
+            normalization_warnings.append(
+                f"Normalized {normalized_paths} nested SDK evidence field reference(s)."
+            )
+        if discarded_evidence:
+            normalization_warnings.append(
+                f"Discarded {discarded_evidence} unusable SDK summary evidence reference(s); saved field sources remain validated."
+            )
 
         def validate_sources(value):
             if isinstance(value, dict):
@@ -259,16 +323,24 @@ def extract_pdf(content):
         validate_sources(record)
         validate_sources(reviews)
     except (KeyError, TypeError, ValueError, ValidationError) as exc:
-        raise ValueError("Codex CLI returned invalid or unreadable PDF data; no fields were saved. Retry the PDF") from exc
+        if isinstance(exc, ValidationError) and exc.errors():
+            first = exc.errors()[0]
+            location = ".".join(str(part) for part in first.get("loc", ())) or "record"
+            reason = f"{location}: {first.get('msg', 'invalid value')}"
+        else:
+            reason = str(exc) or type(exc).__name__
+        logging.warning("Codex SDK response validation failed: %s", reason)
+        raise ValueError(f"Codex SDK returned data that could not be saved ({reason}). Retry the PDF") from exc
     fields = [field for field in CaseRecord.model_fields if field != "notes"]
     populated = [field for field in fields if record[field] and record[field] != "unknown"]
     pages = [{"page": page, "text": "\n".join(item["excerpt"] for item in evidence if item["page"] == page),
               "tables": []} for page in range(1, count + 1)]
     return {
-        "reader_version": VERSION, "provider": "codex_cli", "model": model or "cli-default",
+        "reader_version": VERSION, "provider": "codex_sdk", "model": model or "sdk-default",
         "record": record, "response": data,
         "subject": data.get("subject"), "pages": pages,
-        "warnings": ["Fields and supporting excerpts were extracted by Codex CLI. Verify against the original PDF."],
+        "warnings": ["Fields and supporting excerpts were extracted by Codex SDK. Verify against the original PDF.",
+                     *normalization_warnings],
         "case_facts": {"version": VERSION, "evidence": evidence, "warnings": [],
                        "field_review": reviews,
                        "populated_fields": populated,
