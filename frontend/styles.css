@@ -15,3 +15,20 @@
 .pdf-download-button{display:inline-block;border:1px solid var(--green);border-radius:6px;padding:9px 12px;color:var(--green);white-space:nowrap}.case-pdf-download{display:block;margin:6px 0;font-size:12px;white-space:nowrap}.case-pdf-downloads summary{cursor:pointer;color:var(--green);font-size:12px}.case-pdf-downloads a{max-width:240px;white-space:normal;overflow-wrap:anywhere}
 
 #source-page-image { display: block; width: 100%; height: auto; padding: 0 20px 20px; box-sizing: border-box; }
+
+/* Compact rows only for the case library, import history and order catalogue. */
+table:has(> tbody:is(#case-list,#import-job-list,#order-list)){table-layout:fixed}
+:is(#case-list,#import-job-list,#order-list)>tr>td{height:96px;padding:12px 24px 20px;vertical-align:top!important;position:relative}
+table:has(> tbody:is(#case-list,#import-job-list,#order-list))>thead th{height:64px}
+table:has(#case-list){min-width:1150px}
+table:has(#case-list) th:nth-child(1){width:20%}
+table:has(#case-list) th:nth-child(2){width:28%}
+table:has(#import-job-list){min-width:1800px}
+table:has(#import-job-list) th:nth-child(-n+2){width:220px}
+.table-cell-preview{height:63px;overflow:hidden;white-space:normal;overflow-wrap:anywhere;line-height:21px}
+.table-cell-preview :is(strong,small,a,button,span,div,summary){max-width:100%;white-space:normal!important;overflow-wrap:anywhere}
+.table-cell-preview :is(strong,small){display:block}
+.table-cell-preview .badge{vertical-align:middle}
+.table-cell-more{position:absolute;right:4px;bottom:4px;border:1px solid var(--line);border-radius:4px;background:var(--white);color:var(--green);padding:0 6px;line-height:20px;font-weight:700}
+.table-cell-more:hover{background:var(--paper)}
+.table-row-expanded .table-cell-preview{height:auto;min-height:63px;overflow:visible}

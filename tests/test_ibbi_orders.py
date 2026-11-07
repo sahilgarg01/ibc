@@ -39,7 +39,7 @@ def test_listing_sync_resume_and_catalogue(tmp_path, monkeypatch):
         assert db.execute('SELECT COUNT(*) FROM source_order_filters').fetchone()[0] == 1
 
     # A source listing becomes an unapproved review draft only when selected.
-    monkeypatch.setattr('backend.main.download_order', lambda root, order_id: ROOT / 'samples/indo-global-resolution-order.pdf')
+    monkeypatch.setattr('backend.import_service.download_order', lambda root, order_id: ROOT / 'samples/indo-global-resolution-order.pdf')
     with TestClient(create_app(tmp_path)) as api:
         stats = api.get('/api/orders/stats').json()
         assert stats['orders'] == 2 and stats['pages_fetched'] == 2
@@ -79,9 +79,9 @@ def test_parser_refuses_changed_page():
 
 
 def test_explicit_review_rejects_nonfinal_high_court_order(tmp_path, monkeypatch):
-    monkeypatch.setattr('backend.main.download_order',
+    monkeypatch.setattr('backend.import_service.download_order',
                         lambda root, order_id: ROOT / 'samples/indo-global-resolution-order.pdf')
-    monkeypatch.setattr('backend.main.extract_pdf', lambda content: {
+    monkeypatch.setattr('backend.codex_extraction.extract_pdf', lambda content: {
         'pages': [{'page': 1, 'text': 'IN THE HIGH COURT OF GUJARAT. The tax notices are quashed.'}],
         'warnings': [], 'subject': 'High Court judgment'})
     with TestClient(create_app(tmp_path)) as api:

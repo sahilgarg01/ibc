@@ -18,7 +18,23 @@ flowchart LR
     J --> F
 ```
 
-The API is in `backend/main.py`; input contracts and the haircut calculation are in `backend/models.py`. `backend/codex_extraction.py` passes the local PDF path and JSON schema to Codex SDK and validates structured fields; the database supplies the review form. `backend/db.py` creates PostgreSQL tables for cases, documents and audit events when `DATABASE_URL` is configured, with SQLite available for isolated tests. PostgreSQL stores the selected PDF's bytes in `documents.content`, alongside extraction and case data. `frontend/index.html`, `frontend/styles.css`, and `frontend/app.js` form a browser interface served by FastAPI. The OpenAPI reference is at `/docs`.
+`backend/main.py` composes the application; all HTTP routes and exception handlers belong to `Handlers` in `backend/handlers.py`. Input contracts and the haircut calculation are in `backend/models.py`. `CodexExtraction` in `backend/codex_extraction.py` owns all SDK configuration, prompts, response schemas, extraction, validation and extraction-specific transformations. `Database` in `backend/db.py` owns all SQL, connections, transactions, schemas, migrations, projections, backfills and maintenance database operations. PostgreSQL is selected when `DATABASE_URL` is configured; SQLite supports isolated tests. PostgreSQL stores PDF bytes in `documents.content`, alongside extraction and case data. The existing frontend is served by FastAPI, and the OpenAPI reference remains at `/docs`.
+
+| Component | Responsibility |
+|---|---|
+| `Application` / `Settings` | Dependency construction, configuration, worker resources and startup/shutdown |
+| `Handlers` | Request contracts, route registration, HTTP responses and exception handlers |
+| `CaseService` | Case reads, evidence validation, draft saves, approvals and audit coordination |
+| `DocumentService` | PDF ingestion, duplicates, source content, rendering, re-extraction and uploads |
+| `ImportService` | Manual import jobs, progress, history, catalogue and source-order review |
+| `AutomaticOrders` | Scheduler lifecycle, leases, collection, retries and checkpoints |
+| `IbbiOrders` / `UrlImporter` | Official listing parsing, downloads, URL validation and crawling |
+| `DocumentMatcher` | Fingerprints, identifier extraction and candidate evaluation |
+| `PdfSource` | Python PDF text reading and original-page rendering |
+| `ResearchAnalytics` | Approved-case filtering, profiles, metrics and analytics responses |
+| `Database` | Every database operation, including those used by maintenance scripts |
+
+Services use named `Database` methods inside an explicit session. Query results are materialized before leaving that session. Multi-table writes retain their original transaction boundaries, including draft version checks, audit records and structured projections. File-ingestion failures roll back database writes and remove the newly written PDF. `structured.py` and `catalogue.py` were consolidated into `Database` and removed. Existing module-level callable aliases remain where needed by CLI tools and callers; they share the class implementations.
 
 `backend/ibbi_orders.py` parses the public listing's 20-row pages and GET filters, saves order metadata and page checkpoints, and downloads order PDFs with retry and disk-space checks. Failed pages are recorded separately and retried on the next run. `source_orders`, `source_pages`, `source_page_failures`, `source_filters`, and `source_order_filters` are separate from the verified case tables. Source metadata is not automatically treated as a confirmed company, claim or outcome. The catalogue UI and `/api/orders` API provide search, date, remark, indexed-bench and tagged adverse filters, plus year and remark counts. Choosing an order creates a review draft from its PDF.
 

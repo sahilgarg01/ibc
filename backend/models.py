@@ -231,3 +231,15 @@ def metrics(record: CaseRecord) -> dict:
             "plan_payments_sum_inr": str(payment_sum) if record.plan_payments else None,
             "plan_payments_difference_inr": difference(payment_sum, plan_total) if record.plan_payments else None,
             "plan_payments_match_total": payment_sum == plan_total if record.plan_payments and plan_total is not None else None}
+
+
+class ImportRequest(BaseModel):
+    url: str = Field(min_length=10, max_length=2000)
+    max_pages: int | None = Field(default=None, ge=1)
+    max_files: int = Field(default=25, ge=1, le=500)
+
+
+class ScheduleSettings(BaseModel):
+    enabled: bool
+    interval_minutes: int = Field(default=1440, ge=15, le=10080)
+    category: str = Field(default='all', max_length=100)

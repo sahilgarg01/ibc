@@ -15,9 +15,11 @@ from backend.models import CaseRecord
 def test_ibbi_listing_and_pdf_screening_match_for_both_import_methods(tmp_path, monkeypatch, method):
     rows = [
         ('procedure', 'Appointment of RP'),
-        ('final', 'Appointment of Liquidator'),
-        ('nonfinal', 'Order'),
-        ('broken', 'Order'),
+        ('final', 'Liquidation'),
+        ('nonfinal', 'Final Order'),
+        ('broken', 'Sale as a Going Concern'),
+        ('sale', 'SALE AS GOING CONCERN'),
+        ('empty', ''),
     ]
     html = '<table class="reporttable"><tbody>' + ''.join(
         f'<tr><td>{i}</td><td>15 Oct, 2026</td><td><a href="/uploads/order/{name}.pdf">{name}</a></td><td>{remark}</td></tr>'
@@ -37,10 +39,8 @@ def test_ibbi_listing_and_pdf_screening_match_for_both_import_methods(tmp_path, 
                 'warnings': [], 'subject': 'Test order', 'case_facts': {'evidence': [], 'warnings': []}}
     monkeypatch.setattr(url_import, 'fetch', fetch)
     monkeypatch.setattr('backend.automatic_orders.fetch', fetch)
-    monkeypatch.setattr('backend.main.public_url', lambda url: url)
-    monkeypatch.setattr('backend.main.extract_pdf', extract)
-    monkeypatch.setattr(url_import, 'extract_pdf', extract)
-    monkeypatch.setattr('backend.automatic_orders.extract_pdf', extract)
+    monkeypatch.setattr('backend.import_service.public_url', lambda url: url)
+    monkeypatch.setattr('backend.codex_extraction.extract_pdf', extract)
     with TestClient(create_app(tmp_path)) as client:
         response = (client.post('/api/imports', json={'url': 'https://ibbi.gov.in/orders/nclt'})
                     if method == 'manual' else client.post('/api/scheduler/sync?category=nclt'))
@@ -52,7 +52,8 @@ def test_ibbi_listing_and_pdf_screening_match_for_both_import_methods(tmp_path, 
             time.sleep(.02)
         result = job['result']
         assert result['imported'] == 1 and result['review_required'] == 2 and result['failed'] == 1, job
-        assert any(url.endswith('/procedure.pdf') for url in fetched)
+        assert result['skipped'] == 2
+        assert not any(url.endswith(('/procedure.pdf', '/empty.pdf')) for url in fetched)
         cases = client.get('/api/cases').json()
         assert len(cases) == 1
         case = client.get('/api/cases/'+cases[0]['id']).json()
@@ -62,9 +63,9 @@ def test_ibbi_listing_and_pdf_screening_match_for_both_import_methods(tmp_path, 
 
 
 def test_nonfinal_url_import_remains_a_draft(tmp_path, monkeypatch):
-    monkeypatch.setattr('backend.main.public_url', lambda url: url)
+    monkeypatch.setattr('backend.import_service.public_url', lambda url: url)
     monkeypatch.setattr(url_import, 'fetch', lambda client, url, limit: (b'%PDF-test', url))
-    monkeypatch.setattr('backend.main.extract_pdf', lambda content: {
+    monkeypatch.setattr('backend.codex_extraction.extract_pdf', lambda content: {
         'record': CaseRecord().model_dump(mode='json'),
         'pages': [{'page': 1, 'text': ''}], 'warnings': [],
         'case_facts': {'evidence': [], 'warnings': []}})
@@ -80,11 +81,63 @@ def test_nonfinal_url_import_remains_a_draft(tmp_path, monkeypatch):
         assert client.get('/api/cases').json()[0]['review_status'] == 'draft'
 
 
+def test_direct_ibbi_pdf_requires_listing_remarks(monkeypatch):
+    def forbidden(*args, **kwargs):
+        raise AssertionError('Must not download a PDF without listing remarks')
+    monkeypatch.setattr(url_import, 'fetch', forbidden)
+    result = url_import.crawl(url_import.ImportRequest(
+        url='https://ibbi.gov.in/uploads/order/direct.pdf'), forbidden, lambda result: None)
+    assert result['pages'] == 0 and result['discovered'] == 0
+    assert 'listing page' in result['errors'][0]['error']
+
+
+def test_remarks_count_script_only_fetches_listing_pages(monkeypatch, tmp_path):
+    import importlib.util
+    spec = importlib.util.spec_from_file_location('remarks_counter', ROOT / 'scripts/count_ibbi_order_remarks.py')
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    requests = []
+    def handler(request):
+        requests.append(str(request.url))
+        assert request.url.path == '/orders/nclt'
+        assert request.url.params['nclt'] == '38'
+        page = int(request.url.params['page'])
+        remarks = ['Liquidation and Final Order', 'sale AS a   going concern', '', 'Appointment of RP']
+        html = '<table class="reporttable"><tbody>' + ''.join(
+            f'<tr><td>{i}</td><td>15 Oct, 2026</td><td><a href="/uploads/order/{i}.pdf">Order</a></td><td>{remark}</td></tr>'
+            for i, remark in enumerate(remarks)) + '</tbody></table>'
+        html += '<ul class="pagination"><li><a href="?page=2">Last</a></li></ul>'
+        return httpx.Response(200, text=html)
+    original_client = httpx.Client
+    monkeypatch.setattr(module.httpx, 'Client', lambda **kwargs:
+                        original_client(transport=httpx.MockTransport(handler), **kwargs))
+    csv_path = tmp_path / 'counts.csv'
+    result = module.count_orders('https://ibbi.gov.in/orders/nclt?nclt=38', delay=0, csv_path=csv_path)
+    assert len(requests) == 2 and result['complete']
+    assert result['total_rows'] == 8 and result['matching_rows'] == 4
+    assert result['unique_matching_pdfs'] == 2 and result['empty_remarks'] == 2
+    assert result['rows_by_term']['final order'] == 2
+    import csv
+    with csv_path.open(encoding='utf-8-sig', newline='') as source:
+        saved = list(csv.DictReader(source))
+    assert len(saved) == 2
+    for page, row in enumerate(saved, 1):
+        assert int(row['page']) == page
+        assert int(row['total_pdfs']) == 4
+        assert int(row['liquidation']) == 1 and int(row['not_liquidation']) == 3
+        assert int(row['final_order']) == 1
+        assert int(row['sale_as_a_going_concern']) == 1
+        assert int(row['sale_as_going_concern']) == 0
+        assert int(row['matching_pdfs']) == 2 and int(row['nonmatching_pdfs']) == 2
+        assert int(row['empty_remarks']) == 1
+    assert len(result['per_page']) == 2
+
+
 def test_ibbi_manual_import_ignores_navigation_pdfs_and_keeps_real_failures(monkeypatch):
     pages = {
         'https://ibbi.gov.in/orders/high-courts': b'''<a href="/uploads/structure/Organization_Chart.pdf">Chart</a>
-            <table class="reporttable"><tbody><tr><td>1</td><td>15 Oct, 2026</td><td><a href="/uploads/order/nonfinal.pdf">Order</a></td><td>Order</td></tr>
-            <tr><td>2</td><td>15 Oct, 2026</td><td><a href="/uploads/order/broken.pdf">Broken PDF</a></td><td>Order</td></tr></tbody></table>
+            <table class="reporttable"><tbody><tr><td>1</td><td>15 Oct, 2026</td><td><a href="/uploads/order/nonfinal.pdf">Order</a></td><td>Final Order</td></tr>
+            <tr><td>2</td><td>15 Oct, 2026</td><td><a href="/uploads/order/broken.pdf">Broken PDF</a></td><td>Final Order</td></tr></tbody></table>
             <a rel="next" href="/orders/high-courts?page=2">Next</a>''',
         'https://ibbi.gov.in/orders/high-courts?page=2': b'<table class="reporttable"></table>',
         'https://ibbi.gov.in/uploads/order/nonfinal.pdf': b'%PDF-nonfinal',
@@ -100,7 +153,7 @@ def test_ibbi_manual_import_ignores_navigation_pdfs_and_keeps_real_failures(monk
         if not content.startswith(b'%PDF-'):
             raise ValueError('Invalid PDF')
         return {'record': CaseRecord().model_dump(mode='json')}
-    monkeypatch.setattr(url_import, 'extract_pdf', extract)
+    monkeypatch.setattr('backend.codex_extraction.extract_pdf', extract)
     monkeypatch.setattr(url_import, 'fetch', fetch)
     result = url_import.crawl(url_import.ImportRequest(url='https://ibbi.gov.in/orders/high-courts'),
                               ingest, lambda result: None)
@@ -132,7 +185,7 @@ def test_import_pagination_duplicates_failures_and_jobs(tmp_path, monkeypatch):
         'https://public.example/bad.pdf': b'not a PDF',
     }
     monkeypatch.setattr(url_import, 'public_url', lambda u: u)
-    monkeypatch.setattr('backend.main.public_url', lambda u: u)
+    monkeypatch.setattr('backend.import_service.public_url', lambda u: u)
     monkeypatch.setattr(url_import, 'fetch', lambda client, url, limit: (pages[url], url))
     with TestClient(create_app(tmp_path)) as client:
         response = client.post('/api/imports', json={'url':'https://public.example/', 'max_files':25})

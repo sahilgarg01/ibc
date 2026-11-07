@@ -14,7 +14,7 @@ import pytest
 
 def listing(category, page=1):
     return f'''<a href="/orders/additional">Additional court</a><table class="reporttable"><tbody>
-        <tr><td>1</td><td>29 Sep, 2026</td><td><a href="/uploads/order/{category}-{page}.pdf">Example order</a></td><td>Order</td></tr>
+        <tr><td>1</td><td>29 Sep, 2026</td><td><a href="/uploads/order/{category}-{page}.pdf">Example order</a></td><td>Final Order</td></tr>
         </tbody></table><ul class="pagination"><li><a href="/orders/{category}?page={2 if category=='nclt' else 1}">Last</a></li></ul>'''.encode()
 
 
@@ -34,8 +34,8 @@ def test_distinct_source_rows_keep_their_pdf_and_official_subject(tmp_path, monk
     output = BytesIO(original+b'\n%changed-container')
     pdfs = {'first.pdf': original, 'second.pdf': output.getvalue()}
     html = b'''<table class="reporttable"><tbody>
-        <tr><td>1</td><td>08 Aug, 2022</td><td><a href="/uploads/order/first.pdf">Official first subject</a></td><td>First</td></tr>
-        <tr><td>2</td><td>21 Apr, 2022</td><td><a href="/uploads/order/second.pdf">Official second subject</a></td><td>Second</td></tr>
+        <tr><td>1</td><td>08 Aug, 2022</td><td><a href="/uploads/order/first.pdf">Official first subject</a></td><td>Liquidation</td></tr>
+        <tr><td>2</td><td>21 Apr, 2022</td><td><a href="/uploads/order/second.pdf">Official second subject</a></td><td>Final Order</td></tr>
         </tbody></table>'''
     def fetch(client, url, limit):
         name = urlsplit(url).path.rsplit('/', 1)[-1]
@@ -110,7 +110,7 @@ def test_nonfinal_other_court_orders_are_not_imported(tmp_path, monkeypatch, cat
     pdf = (ROOT/'samples/indo-global-resolution-order.pdf').read_bytes()
     extraction = {'record': {'outcome': 'unknown'}, 'pages': [{'page': 1, 'text': 'IN THE HIGH COURT OF GUJARAT. The tax demand notices are quashed.'}],
                   'warnings': [], 'subject': 'High Court judgment'}
-    monkeypatch.setattr('backend.automatic_orders.extract_pdf', lambda content: extraction)
+    monkeypatch.setattr('backend.codex_extraction.extract_pdf', lambda content: extraction)
     monkeypatch.setattr('backend.automatic_orders.fetch',
                         lambda client, url, limit: (pdf if url.endswith('.pdf') else listing(category), url))
     monkeypatch.setattr('backend.automatic_orders.Event.wait',

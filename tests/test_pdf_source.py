@@ -16,7 +16,7 @@ def test_source_pages_come_from_python_and_are_cached_without_changing_fields(tm
         before = client.get(f'/api/cases/{ids["case_id"]}').json()
         # The fixture's model page text is unrelated to the actual PDF text.
         model_pages = before['documents'][0]['extraction']['pages']
-        monkeypatch.setattr('backend.main.extract_pdf', lambda _: (_ for _ in ()).throw(AssertionError('Codex must not run')))
+        monkeypatch.setattr('backend.codex_extraction.extract_pdf', lambda _: (_ for _ in ()).throw(AssertionError('Codex must not run')))
         result = client.get(f'/api/documents/{ids["document_id"]}/content')
         assert result.status_code == 200, result.text
         source = result.json()
@@ -28,7 +28,7 @@ def test_source_pages_come_from_python_and_are_cached_without_changing_fields(tm
         assert 'Secured' in source['pages'][8]['text']
         assert not any('Codex' in warning for warning in source['warnings'])
         # Subsequent views read the Python cache, never the model response.
-        monkeypatch.setattr('backend.main.read_source', lambda _: (_ for _ in ()).throw(AssertionError('Cache should be reused')))
+        monkeypatch.setattr('backend.document_service.read_source', lambda _: (_ for _ in ()).throw(AssertionError('Cache should be reused')))
         assert client.get(f'/api/documents/{ids["document_id"]}/content').json()['pages'] == source['pages']
         after = client.get(f'/api/cases/{ids["case_id"]}').json()
         assert after == before

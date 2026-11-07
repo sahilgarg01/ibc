@@ -28,5 +28,4 @@ def mocked_pdf_extraction(request, monkeypatch):
         if not content.startswith(b"%PDF-"):
             raise ValueError("Upload a valid PDF")
         return copy.deepcopy(result)
-    for module in ("backend.main", "backend.url_import", "backend.automatic_orders"):
-        monkeypatch.setattr(f"{module}.extract_pdf", extract)
+    monkeypatch.setattr("backend.codex_extraction.extract_pdf", extract)

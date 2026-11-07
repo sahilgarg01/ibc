@@ -258,3 +258,17 @@ def test_sdk_uses_configured_model(monkeypatch, sdk_response):
     assert sdk_response['calls'][0]['options']['model'] == 'gpt-6.1-sol'
     assert result['provider'] == 'codex_sdk'
     assert result['model'] == 'gpt-6.1-sol'
+
+
+def test_usage_and_processing_metadata_are_saved(monkeypatch, sdk_response):
+    usage = {'input_tokens': 120, 'cached_input_tokens': 20, 'output_tokens': 30,
+             'reasoning_output_tokens': 10, 'total_tokens': 150}
+
+    async def request(*args):
+        return json.dumps(sdk_response['data']), usage
+
+    monkeypatch.setattr(extraction, 'request_fields', request)
+    result = extraction.extract_pdf(b'%PDF-test')
+    assert result['usage'] == usage
+    assert result['file_bytes'] == 9
+    assert result['processing_seconds'] >= 0
