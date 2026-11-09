@@ -48,9 +48,9 @@ class CaseService:
         with self.context.database.session() as db:
             return db.match_candidates(name, din, cin)
 
-    def list_cases(self, q: str='', status: str='all'):
+    def list_cases(self, q: str='', status: str='all', summary: bool=False):
         with self.context.database.session() as db:
-            cases = [decode(r) for r in db.all_cases()]
+            cases = [decode(r) for r in (db.all_cases() if status == 'all' else db.filtered_cases(status))]
             subjects = {}
             pdf_documents = {}
             for row in db.case_document_summaries():
@@ -73,6 +73,9 @@ class CaseService:
             if status != 'all' and case['review_status'] != status:
                 continue
             case['metrics'] = metrics(record)
+            if summary:
+                case['record'] = {key: case['record'].get(key) for key in
+                                  ('company', 'case_number', 'professional', 'cin', 'outcome')}
             result.append(case)
         return result
 

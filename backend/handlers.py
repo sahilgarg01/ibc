@@ -179,8 +179,8 @@ class Handlers:
     def review_order(self, order_id: str):
         return self.context.imports.review_order(order_id)
 
-    def list_cases(self, q: str=Query('', max_length=200), status: str='all'):
-        return self.context.cases.list_cases(q, status)
+    def list_cases(self, q: str=Query('', max_length=200), status: str='all', summary: bool=False):
+        return self.context.cases.list_cases(q, status, summary)
 
     def case_detail(self, case_id: str):
         return self.context.cases.case_detail(case_id)

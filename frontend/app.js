@@ -31,22 +31,37 @@ async function showExplorer() { hideImportScreen(); $('#explorer').hidden=false;
 async function showCatalogue() { hideImportScreen(); $('#explorer').hidden=true; $('#catalogue').hidden=false; $('#detail').hidden=true; $('#nav-cases').classList.remove('active'); $('#nav-orders').classList.add('active'); history.replaceState({},'', '/#orders'); await refreshOrders(); }
 function showUpload() { $('#upload-status').textContent=''; $('#upload-dialog').showModal(); }
 
-async function refresh() {
-  try {
-    const [cases, stats, sample] = await Promise.all([api('/api/cases'), api(`/api/analytics?years=${encodeURIComponent($('#analytics-years').value)}`), api('/api/sample')]);
-    state.cases = cases;
-    renderResearch(stats);
-    $('#sample-source').href = sample.source_url;
-    $('#stats').innerHTML = [
-      ['TOTAL CASES', stats.total_cases, 'Across all review stages'],
-      ['APPROVED', stats.approved_cases, 'Included in analytics'],
-      ['RESOLVED', stats.outcomes.resolution_approved || 0, 'Approved resolution cases'],
-      ['PLAN HAIRCUT', stats.weighted_plan_haircut_percent == null ? '—' : `${stats.weighted_plan_haircut_percent}%`, `${stats.covered_cases} reviewed cases in selected period`],
-    ].map(([title,value,note]) => `<div class="stat"><div class="stat-title">${title}</div><div class="stat-value">${esc(value)}</div><div class="stat-note">${esc(note)}</div></div>`).join('');
-    renderList();
-    return true;
-  } catch (error) { message(error.message, true); return false; }
+let explorerRefresh = 0;
+let analyticsRequest = 0;
+async function refreshAnalytics(version = explorerRefresh) {
+  const request = ++analyticsRequest;
+  const stats = await api(`/api/analytics?years=${encodeURIComponent($('#analytics-years').value)}`);
+  if (version !== explorerRefresh || request !== analyticsRequest) return;
+  renderResearch(stats);
+  $('#stats').innerHTML = [
+    ['TOTAL CASES', stats.total_cases, 'Across all review stages'],
+    ['APPROVED', stats.approved_cases, 'Included in analytics'],
+    ['RESOLVED', stats.outcomes.resolution_approved || 0, 'Approved resolution cases'],
+    ['PLAN HAIRCUT', stats.weighted_plan_haircut_percent == null ? '—' : `${stats.weighted_plan_haircut_percent}%`, `${stats.covered_cases} reviewed cases in selected period`],
+  ].map(([title,value,note]) => `<div class="stat"><div class="stat-title">${title}</div><div class="stat-value">${esc(value)}</div><div class="stat-note">${esc(note)}</div></div>`).join('');
 }
+async function refresh() {
+  const version = ++explorerRefresh;
+  const results = await Promise.allSettled([
+    api('/api/cases?summary=true').then(cases => {
+      if (version !== explorerRefresh) return;
+      state.cases = cases;
+      renderList();
+    }),
+    refreshAnalytics(version),
+    api('/api/sample').then(sample => { $('#sample-source').href = sample.source_url; }),
+  ]);
+  if (version !== explorerRefresh) return false;
+  const errors = results.filter(result => result.status === 'rejected');
+  if (errors.length) message(errors.map(result => result.reason.message).join('; '), true);
+  return errors.length === 0;
+}
+
 function renderList() {
   const q = $('#search').value.trim().toLowerCase(), status = $('#status').value;
   const cases = state.cases.filter(c => {
@@ -441,7 +456,13 @@ $('#cases-next').onclick=()=>{state.casePage++;renderList();};
 $('#order-filters').onsubmit=event=>{event.preventDefault();state.orderPage=1;refreshOrders();};
 $('#order-filters').onreset=()=>{state.orderPage=1;setTimeout(refreshOrders,0);};
 $('#orders-prev').onclick=()=>{state.orderPage--;refreshOrders();};$('#orders-next').onclick=()=>{state.orderPage++;refreshOrders();};
-refresh().then(()=>{const match=location.hash.match(/^#case=([a-f0-9]{32})$/);if(match)openCase(match[1]);else if(location.hash==='#orders')showCatalogue();else if(location.hash==='#files')showCatalogue();});
+window.addEventListener('DOMContentLoaded', () => {
+  const match = location.hash.match(/^#case=([a-f0-9]{32})$/);
+  if (match) openCase(match[1]);
+  else if (location.hash === '#orders' || location.hash === '#files') showCatalogue();
+  else if (location.hash === '#imports') showImportScreen();
+  else refresh();
+});
 
 function planCard(p,docs){return `<div class="plan-card claim-card"><label>Applicant<input class="plan-applicant" value="${esc(p.applicant)}"></label><label>Plan amount (INR)<input class="plan-amount" type="number" min="0" step="0.01" value="${esc(p.amount)}"></label><label>Admitted amount covered by this plan (INR)<input class="plan-admitted" type="number" min="0.01" step="0.01" value="${esc(p.admitted)}"></label><label>Document<select class="plan-doc">${docOptions(docs,p.document_id)}</select></label><label>Page<input class="plan-page" type="number" min="1" value="${esc(p.page||1)}"></label><button type="button" class="text-button remove-row">Remove plan</button></div>`;}
 function renderResearch(stats){
@@ -463,7 +484,7 @@ function renderResearch(stats){
   $('#research-analytics').insertAdjacentHTML('beforeend',`<h3>IRP profiles</h3><p>All approved cases, including undated cases. Profiles group exact normalized names; a shared name does not prove the same person. Open a case or source page to verify it.</p>${irpHtml}<h3>Before / after ownership and directors</h3><p>All approved cases with at least one documented side. CIN/DIN matches are confirmed identifier overlaps; name-only matches require review. Missing names do not establish a change in ownership.</p>${ownershipHtml}`);
   $$('.research-case').forEach(button=>button.onclick=()=>openCase(button.dataset.case));
 }
-$('#analytics-years').onchange=refresh;
+$('#analytics-years').onchange=()=>refreshAnalytics().catch(error=>message(error.message,true));
 $('#entity-form').onsubmit=async event=>{event.preventDefault();try{const values=[...new FormData(event.target)].filter(([,v])=>v.trim());const matches=await api(`/api/entities/match?${new URLSearchParams(values)}`);$('#entity-results').innerHTML=matches.length?matches.map(m=>`<p>${esc(m.name)} · ${esc(m.identifier||'No identifier')} · ${esc(m.match)} · ${esc(m.score)}</p>`).join(''):'No matches found.';}catch(e){message(e.message,true);}};
 
 const pageLimit=$('#import-form input[name="max_pages"]');

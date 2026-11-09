@@ -82,3 +82,9 @@ To verify real final orders through both import methods without changing applica
 The SDK uses a temporary workspace with the workspace-write sandbox and automatic approval denied. The PDF and intermediate files are cleaned up after each run, and the SDK client is closed on success, failure or timeout. Successful JSON is retained in `documents.extraction.response`; validated fields are stored in `cases.record` and projected into the structured tables. Failed, timed-out, unreadable or invalid results do not create a partial case.
 
 The SDK uses the local Codex account session and manages its bundled runtime. If the runtime cannot find its home or login, configure `CODEX_HOME` for the backend account. The application does not modify your authentication settings. Official SDK documentation: https://learn.chatgpt.com/docs/codex-sdk.
+
+## Case explorer performance
+
+The explorer uses `/api/cases?summary=true` to load only the fields displayed or searched in the list; full records remain available on the case detail endpoint. Analytics count all review stages in SQL and read full records only for approved cases, without scanning document subjects. Each dashboard section renders when its own request finishes, and changing the analytics period only reloads analytics.
+
+Database initialization creates missing indexes for case status/date, document case/date and source URL, source-order document/date, and case audit history. Restart the backend after deploying these changes to apply indexes to existing PostgreSQL or SQLite databases. Index creation can take time on a large existing database; schedule the restart accordingly.

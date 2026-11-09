@@ -639,6 +639,16 @@ WHERE NOT EXISTS(SELECT 1 FROM import_files f WHERE f.document_id=d.id)
                     )
         with self.connection(root, database_url=url) as db:
             db.initialize_structured()
+            # Create after column migrations so existing installations receive these indexes too.
+            for statement in (
+                'CREATE INDEX IF NOT EXISTS cases_status_created_idx ON cases(review_status,created_at DESC)',
+                'CREATE INDEX IF NOT EXISTS cases_created_idx ON cases(created_at DESC)',
+                'CREATE INDEX IF NOT EXISTS documents_case_created_idx ON documents(case_id,created_at)',
+                'CREATE INDEX IF NOT EXISTS documents_source_url_idx ON documents(source_url)',
+                'CREATE INDEX IF NOT EXISTS source_orders_document_date_idx ON source_orders(document_id,order_date DESC)',
+                'CREATE INDEX IF NOT EXISTS audit_case_id_idx ON audit(case_id,id DESC)',
+            ):
+                db.execute(statement)
             for order in db.execute('SELECT id,pdf_url FROM source_orders WHERE document_id IS NULL').fetchall():
                 matches = db.execute(
                     (
@@ -1144,7 +1154,16 @@ WHERE NOT EXISTS(SELECT 1 FROM import_files f WHERE f.document_id=d.id)
         return list(self.execute('SELECT id,extraction FROM documents WHERE case_id=?', (case_id,)))
 
     def all_cases(self):
-        return list(self.execute('SELECT * FROM cases ORDER BY created_at DESC', ()))
+        return self.filtered_cases()
+
+    def filtered_cases(self, status='all'):
+        where, params = ('', ()) if status == 'all' else (' WHERE review_status=?', (status,))
+        return list(self.execute('SELECT * FROM cases' + where + ' ORDER BY created_at DESC', params))
+
+    def case_counts(self):
+        return {row['review_status']: row['total'] for row in self.execute(
+            'SELECT review_status,COUNT(*) total FROM cases GROUP BY review_status')}
+
 
     def case_document_summaries(self):
         return list(self.execute('SELECT id,case_id,filename FROM documents ORDER BY created_at,id', ()))

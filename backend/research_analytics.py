@@ -3,6 +3,8 @@ from collections import defaultdict
 from datetime import date
 from decimal import Decimal
 from .document_matching import normalized
+from .db import decode
+from .models import CaseRecord, metrics
 
 class ResearchAnalytics:
 
@@ -307,8 +309,12 @@ class ResearchAnalytics:
         self.context = context
 
     def analytics(self, years: int=10):
-        cases = self.context.cases.list_cases(q='', status='all')
-        approved = [c for c in cases if c['review_status'] == 'approved']
+        with self.context.database.session() as db:
+            counts = db.case_counts()
+            approved = [decode(row) for row in db.filtered_cases('approved')]
+        for case in approved:
+            case['metrics'] = metrics(CaseRecord.model_validate(case['record']))
+        total = sum(counts.values())
         recent, period = select_recent_cases(approved, years)
         eligible = [c for c in recent if c['record']['outcome'] == 'resolution_approved']
         admitted = sum((Decimal(c['metrics']['matched_admitted_inr']) for c in eligible), Decimal(0))
@@ -317,9 +323,9 @@ class ResearchAnalytics:
             **research_analytics(recent),
             **case_profiles(approved),
             'period': period,
-            'total_cases': len(cases),
+            'total_cases': total,
             'approved_cases': len(approved),
-            'draft_cases': len(cases) - len(approved),
+            'draft_cases': total - len(approved),
             'covered_cases': sum((c['metrics']['plan_haircut_percent'] is not None for c in eligible)),
             'matched_admitted_inr': str(admitted),
             'matched_plan_inr': str(planned),
