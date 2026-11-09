@@ -3,7 +3,8 @@ const $$ = (selector, root = document) => [...root.querySelectorAll(selector)];
 const esc = value => String(value ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const fmt = value => value == null ? '—' : new Intl.NumberFormat('en-IN').format(Number(value));
 const label = value => ({resolution_approved:'Resolution approved',liquidation_ordered:'Liquidation ordered',liquidation_completed:'Liquidation completed',ongoing:'Ongoing',unknown:'Unknown'}[value] || value);
-const state = {cases:[], detail:null, activeDoc:null, page:1, orderPage:1, orderTotal:0};
+const TABLE_PAGE_SIZE = 10;
+const state = {casePage:1,cases:[], detail:null, activeDoc:null, page:1, orderPage:1, orderTotal:0};
 
 async function api(url, options={}) {
   const response = await fetch(url, options);
@@ -54,7 +55,12 @@ function renderList() {
     return searchable.includes(q) && (status === 'all' || c.review_status === status);
   });
   $('#empty').hidden = state.cases.length !== 0;
-  $('#case-list').innerHTML = cases.map(c => `<tr><td><strong>${esc(c.record.company?.value || c.subjects?.[0] || 'Untitled draft')}</strong><small>${esc(c.record.case_number?.value || 'Case number needed')}</small></td><td>${esc((c.subjects||[]).join(' · ')||'Subject unavailable')}</td><td>${esc(label(c.record.outcome))}</td><td><span class="badge ${esc(c.review_status)}">${esc(c.review_status === 'approved' ? 'Approved' : 'Needs review')}</span></td><td>${c.metrics.plan_haircut_percent == null ? '—' : `${esc(c.metrics.plan_haircut_percent)}%`}${c.review_status==='draft' ? '<small>Draft calculation</small>' : ''}</td><td>${esc(createdTime(c.created_at))}</td><td><button class="text-button open-case" data-id="${esc(c.id)}">Review →</button></td></tr>`).join('');
+  const totalPages = Math.max(1, Math.ceil(cases.length / TABLE_PAGE_SIZE));
+  state.casePage = Math.max(1, Math.min(state.casePage, totalPages));
+  $('#cases-page').textContent = `Page ${state.casePage} of ${totalPages} | ${cases.length} cases`;
+  $('#cases-prev').disabled = state.casePage === 1;
+  $('#cases-next').disabled = state.casePage === totalPages;
+  $('#case-list').innerHTML = cases.slice((state.casePage-1)*TABLE_PAGE_SIZE, state.casePage*TABLE_PAGE_SIZE).map(c => `<tr><td><strong>${esc(c.record.company?.value || c.subjects?.[0] || 'Untitled draft')}</strong><small>${esc(c.record.case_number?.value || 'Case number needed')}</small></td><td>${esc((c.subjects||[]).join(' · ')||'Subject unavailable')}</td><td>${esc(label(c.record.outcome))}</td><td><span class="badge ${esc(c.review_status)}">${esc(c.review_status === 'approved' ? 'Approved' : 'Needs review')}</span></td><td>${c.metrics.plan_haircut_percent == null ? '—' : `${esc(c.metrics.plan_haircut_percent)}%`}${c.review_status==='draft' ? '<small>Draft calculation</small>' : ''}</td><td>${esc(createdTime(c.created_at))}</td><td><button class="text-button open-case" data-id="${esc(c.id)}">Review →</button></td></tr>`).join('');
   $$('.open-case').forEach(b => {b.onclick = () => openCase(b.dataset.id);b.insertAdjacentHTML('afterend',casePdfDownloads(cases.find(c=>c.id===b.dataset.id)));});
 }
 function casePdfDownloads(c){
@@ -429,7 +435,9 @@ async function refreshOrders() {
   } catch(error){message(error.message,true);}
 }
 async function reviewOrder(button){setBusy(button,true);try{const result=await api(`/api/orders/${button.dataset.id}/review`,{method:'POST'});await openCase(result.case_id);message(result.duplicate?'Existing review case opened.':'IBBI PDF loaded into a draft for review.');}catch(error){message(error.message,true);}finally{setBusy(button,false);}}
-$('#nav-cases').onclick=showExplorer;$('#nav-orders').onclick=showCatalogue;$('#refresh-explorer').onclick=async()=>{const button=$('#refresh-explorer');setBusy(button,true);try{if(await refresh())message('Case explorer refreshed.');}finally{setBusy(button,false);}};$('#add-document').onclick=showUpload;$('#close-upload').onclick=()=>$('#upload-dialog').close();$('#upload-form').onsubmit=upload;$('#import-sample').onclick=importSample;$('#search').oninput=renderList;$('#status').onchange=renderList;
+$('#nav-cases').onclick=showExplorer;$('#nav-orders').onclick=showCatalogue;$('#refresh-explorer').onclick=async()=>{const button=$('#refresh-explorer');setBusy(button,true);try{if(await refresh())message('Case explorer refreshed.');}finally{setBusy(button,false);}};$('#add-document').onclick=showUpload;$('#close-upload').onclick=()=>$('#upload-dialog').close();$('#upload-form').onsubmit=upload;$('#import-sample').onclick=importSample;$('#search').oninput=()=>{state.casePage=1;renderList();};$('#status').onchange=()=>{state.casePage=1;renderList();};
+$('#cases-prev').onclick=()=>{state.casePage--;renderList();};
+$('#cases-next').onclick=()=>{state.casePage++;renderList();};
 $('#order-filters').onsubmit=event=>{event.preventDefault();state.orderPage=1;refreshOrders();};
 $('#order-filters').onreset=()=>{state.orderPage=1;setTimeout(refreshOrders,0);};
 $('#orders-prev').onclick=()=>{state.orderPage--;refreshOrders();};$('#orders-next').onclick=()=>{state.orderPage++;refreshOrders();};
@@ -462,6 +470,7 @@ const pageLimit=$('#import-form input[name="max_pages"]');
 pageLimit.required=false;pageLimit.removeAttribute('max');pageLimit.value='';pageLimit.placeholder='Blank = all listing pages';
 pageLimit.parentElement.insertAdjacentHTML('beforeend','<small>Leave blank to follow pagination until the PDF file limit is reached.</small>');
 
+let reviewPage=1, currentReviewItems=[];
 let importHistoryPage=1, selectedImport=null, jobFilesPage=1, importHistoryTimer, pendingUploadLabel=null;
 function hideImportScreen(){clearTimeout(importHistoryTimer);$('#import-screen').hidden=true;$('#nav-import').classList.remove('active');}
 function createdTime(value){if(!value)return 'Not recorded';const date=new Date(value);return Number.isNaN(date.getTime())?'Not recorded':date.toLocaleString(undefined,{dateStyle:'medium',timeStyle:'medium'});}
@@ -490,6 +499,7 @@ function focusImportTask(id=null){
   target.scrollIntoView({behavior:'smooth',block:row?'center':'start'});
 }
 async function selectImport(id,{focus='details'}={}){
+  if(selectedImport!==id)reviewPage=1;
   selectedImport=id; jobFilesPage=1;
   $$('#import-job-list tr').forEach(row=>row.classList.toggle('selected',row.dataset.job===id));
   $('#import-job-detail').hidden=false;
@@ -505,15 +515,29 @@ function setImportDetailExpanded(expanded){
   toggle.setAttribute('aria-label',expanded?'Collapse import details':'Expand import details');
 }
 $('#import-detail-toggle').onclick=()=>setImportDetailExpanded($('#import-job-detail-content').hidden);
+function renderReviewItems(){
+  const totalPages=Math.max(1,Math.ceil(currentReviewItems.length/TABLE_PAGE_SIZE));
+  reviewPage=Math.max(1,Math.min(reviewPage,totalPages));
+  $('#review-items-list').innerHTML=currentReviewItems.slice((reviewPage-1)*TABLE_PAGE_SIZE,reviewPage*TABLE_PAGE_SIZE).map(item=>`<tr><td>${esc(item.subject||'Subject not recorded')}</td><td>${esc(item.reason)}</td><td><a href="${esc(item.url)}" target="_blank" rel="noopener">Open PDF</a></td></tr>`).join('');
+  $('#review-page').textContent=`Page ${reviewPage} of ${totalPages} | ${currentReviewItems.length} orders`;
+  $('#review-prev').disabled=reviewPage===1;
+  $('#review-next').disabled=reviewPage===totalPages;
+  $('#review-prev').onclick=()=>{reviewPage--;renderReviewItems();};
+  $('#review-next').onclick=()=>{reviewPage++;renderReviewItems();};
+}
 async function refreshJobFiles(){
   const id=selectedImport;
   try{
-    const [job,files]=await Promise.all([api(`/api/imports/${id}`),api(`/api/import-files?job_id=${encodeURIComponent(id)}&page=${jobFilesPage}`)]);
+    const [job,files]=await Promise.all([api(`/api/imports/${id}`),api(`/api/import-files?job_id=${encodeURIComponent(id)}&page=${jobFilesPage}&page_size=${TABLE_PAGE_SIZE}`)]);
     if(id!==selectedImport)return;
     $('#import-job-title').textContent=`Files for ${job.url} (${job.status}) / ${job.result.discovered||0} found / ${job.result.imported||0} imported / ${job.result.duplicates||0} duplicates / ${job.result.failed||0} failed`;
     $('#import-job-errors').innerHTML=`${job.result.limits_reached?'<p>Configured import limit reached.</p>':''}${job.result.error?`<p>${esc(job.result.error)}</p>`:''}${(job.result.errors||[]).length?'<table><thead><tr><th>FAILED URL</th><th>ERROR</th></tr></thead><tbody>'+job.result.errors.map(e=>`<tr><td>${esc(e.url)}</td><td>${esc(e.error)}</td></tr>`).join('')+'</tbody></table>':''}`;
     const reviewItems=[...(job.result.review_items||[]),...(job.result.skipped_items||[]).map(item=>({...item,reason:`Previously skipped: ${item.reason}. Recheck this PDF.`}))];
-    if(reviewItems.length)$('#import-job-errors').insertAdjacentHTML('beforeend',`<h3>Orders needing review</h3><p>These PDFs were not imported automatically. Open the official PDF to verify the decision.</p><div class="table-scroll"><table><thead><tr><th>SUBJECT</th><th>REASON</th><th>OFFICIAL PDF</th></tr></thead><tbody>${reviewItems.map(item=>`<tr><td>${esc(item.subject||'Subject not recorded')}</td><td>${esc(item.reason)}</td><td><a href="${esc(item.url)}" target="_blank" rel="noopener">Open PDF</a></td></tr>`).join('')}</tbody></table></div>`);
+    currentReviewItems=reviewItems;
+    if(reviewItems.length){
+      $('#import-job-errors').insertAdjacentHTML('beforeend','<section id="review-items-section"><h3>Orders needing review</h3><p>These PDFs were not imported automatically. Open the official PDF to verify the decision.</p><div class="table-scroll"><table><thead><tr><th>SUBJECT</th><th>REASON</th><th>OFFICIAL PDF</th></tr></thead><tbody id="review-items-list"></tbody></table></div><div class="actions"><button id="review-prev" class="secondary" type="button">Previous</button><span id="review-page" aria-live="polite"></span><button id="review-next" class="secondary" type="button">Next</button></div></section>');
+      renderReviewItems();
+    }
     $('#import-job-files').innerHTML=files.items.map(f=>`<tr><td>${esc((f.categories?.length?f.categories:[f.order_kind||'unknown']).join(', ').toUpperCase())}</td><td>${esc(f.subject||'Subject unavailable')}</td><td><strong>${esc(f.imported_filename||f.filename)}</strong><small>${esc(f.source_url)}</small></td><td>${duplicateCell(f)}</td><td>${esc(createdTime(f.created_at))}</td><td><button class="text-button job-content" data-doc="${esc(f.document_id)}">View content</button><br><button class="text-button job-review" data-case="${esc(f.case_id)}">Review case</button></td><td><a href="/api/documents/${encodeURIComponent(f.document_id)}/pdf" target="_blank" rel="noopener">Open PDF</a><br><a href="/api/documents/${encodeURIComponent(f.document_id)}/pdf" download="${esc(f.filename)}">Download PDF</a></td></tr>`).join('');
     $('#import-job-empty').hidden=files.total!==0;$('#job-files-page').textContent=`Page ${jobFilesPage} of ${Math.max(1,Math.ceil(files.total/files.page_size))} · ${files.total} files`;$('#job-files-prev').disabled=jobFilesPage===1;$('#job-files-next').disabled=jobFilesPage*files.page_size>=files.total;
     $$('.job-content').forEach(b=>b.onclick=()=>showFileContent(b.dataset.doc));$$('.job-review').forEach(b=>b.onclick=()=>openCase(b.dataset.case));
